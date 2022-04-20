@@ -413,7 +413,6 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 				s.logger.Debugf("reading stream type on stream %d failed: %s", str.StreamID(), err)
 				return
 			}
-			s.logger.Debugf("got unistream stream type: %d", streamType)
 			// We're only interested in the control stream here.
 			switch streamType {
 			case streamTypeControlStream:
@@ -429,18 +428,8 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 				return
 			}
 
-			var ufh unknownFrameHandlerFunc
-			if s.UniStreamHijacker != nil {
-				ufh = func(ft FrameType) (processed bool, err error) {
-					return s.UniStreamHijacker(ft, conn, str)
-				}
-			}
-			f, err := parseNextFrame(str, ufh)
-			s.logger.Debugf("parseNextFrame in unistream err: %s", err)
+			f, err := parseNextFrame(str, nil)
 			if err != nil {
-				if err == errHijacked {
-					return
-				}
 				conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
 				return
 			}
@@ -458,6 +447,23 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 			if s.EnableDatagrams && !conn.ConnectionState().SupportsDatagrams {
 				conn.CloseWithError(quic.ApplicationErrorCode(errorSettingsError), "missing QUIC Datagram support")
 			}
+
+			var ufh unknownFrameHandlerFunc
+			if s.UniStreamHijacker != nil {
+				ufh = func(ft FrameType) (processed bool, err error) {
+					return s.UniStreamHijacker(ft, conn, str)
+				}
+			}
+			f, err = parseNextFrame(str, ufh)
+			if err != nil {
+				if err == errHijacked {
+					return
+				}
+				conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
+				return
+			}
+			s.logger.Debugf("got unexpected frame on stream %d: %s", str.StreamID(), f)
+			conn.CloseWithError(quic.ApplicationErrorCode(errorFrameUnexpected), "")
 		}(str)
 	}
 }
