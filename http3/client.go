@@ -44,6 +44,7 @@ type roundTripperOpts struct {
 	MaxHeaderBytes     int64
 	AdditionalSettings map[uint64]uint64
 	StreamHijacker     func(FrameType, quic.Connection, quic.Stream) (hijacked bool, err error)
+	UniStreamHijacker  func(FrameType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
 }
 
 // client is a HTTP3 client doing requests
@@ -195,8 +196,18 @@ func (c *client) handleUnidirectionalStreams() {
 				str.CancelRead(quic.StreamErrorCode(errorStreamCreationError))
 				return
 			}
-			f, err := parseNextFrame(str, nil)
+
+			var ufh unknownFrameHandlerFunc
+			if c.opts.UniStreamHijacker != nil {
+				ufh = func(ft FrameType) (processed bool, err error) {
+					return c.opts.UniStreamHijacker(ft, c.conn, str)
+				}
+			}
+			f, err := parseNextFrame(str, ufh)
 			if err != nil {
+				if err == errHijacked {
+					return
+				}
 				c.conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
 				return
 			}

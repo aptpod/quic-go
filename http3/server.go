@@ -151,6 +151,9 @@ type Server struct {
 	// Alternatively, callers can take over the QUIC stream (by returning hijacked true).
 	StreamHijacker func(FrameType, quic.Connection, quic.Stream) (hijacked bool, err error)
 
+	// When set, this callback is called for the first unknown frame parsed on a unidirectional receive stream.
+	UniStreamHijacker func(FrameType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
+
 	mutex     sync.RWMutex
 	listeners map[*quic.EarlyListener]listenerInfo
 
@@ -424,8 +427,18 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 				str.CancelRead(quic.StreamErrorCode(errorStreamCreationError))
 				return
 			}
-			f, err := parseNextFrame(str, nil)
+
+			var ufh unknownFrameHandlerFunc
+			if s.UniStreamHijacker != nil {
+				ufh = func(ft FrameType) (processed bool, err error) {
+					return s.UniStreamHijacker(ft, conn, str)
+				}
+			}
+			f, err := parseNextFrame(str, ufh)
 			if err != nil {
+				if err == errHijacked {
+					return
+				}
 				conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
 				return
 			}
