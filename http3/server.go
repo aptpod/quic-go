@@ -33,6 +33,8 @@ const (
 	nextProtoH3        = "h3"
 )
 
+type StreamType uint64
+
 const (
 	streamTypeControlStream      = 0
 	streamTypePushStream         = 1
@@ -152,7 +154,7 @@ type Server struct {
 	StreamHijacker func(FrameType, quic.Connection, quic.Stream) (hijacked bool, err error)
 
 	// When set, this callback is called for the first unknown frame parsed on a unidirectional receive stream.
-	UniStreamHijacker func(FrameType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
+	UniStreamHijacker func(StreamType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
 
 	mutex     sync.RWMutex
 	listeners map[*quic.EarlyListener]listenerInfo
@@ -359,7 +361,7 @@ func (s *Server) handleConn(conn quic.EarlyConnection) {
 		return
 	}
 	buf := &bytes.Buffer{}
-	quicvarint.Write(buf, streamTypeControlStream) // stream type
+	quicvarint.Write(buf, uint64(streamTypeControlStream)) // stream type
 	(&settingsFrame{Datagram: s.EnableDatagrams, Other: s.AdditionalSettings}).Write(buf)
 	str.Write(buf.Bytes())
 
@@ -400,6 +402,44 @@ func (s *Server) handleConn(conn quic.EarlyConnection) {
 }
 
 func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
+	// handle first unistream
+	str, err := conn.AcceptUniStream(context.Background())
+	if err != nil {
+		s.logger.Debugf("accepting unidirectional stream failed: %s", err)
+		return
+	}
+	go func() {
+		streamType, err := quicvarint.Read(quicvarint.NewReader(str))
+		if err != nil {
+			s.logger.Debugf("reading stream type on stream %d failed: %s", str.StreamID(), err)
+			return
+		}
+
+		// first stream type must be control stream
+		if streamType != streamTypeControlStream {
+			conn.CloseWithError(quic.ApplicationErrorCode(errorStreamCreationError), "")
+			return
+		}
+
+		f, err := parseNextFrame(str, nil)
+		if err != nil {
+			conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
+			return
+		}
+		sf, ok := f.(*settingsFrame)
+		if !ok {
+			conn.CloseWithError(quic.ApplicationErrorCode(errorMissingSettings), "")
+			return
+		}
+
+		// If datagram support was enabled on our side as well as on the client side,
+		// we can expect it to have been negotiated both on the transport and on the HTTP/3 layer.
+		// Note: ConnectionState() will block until the handshake is complete (relevant when using 0-RTT).
+		if sf.Datagram && s.EnableDatagrams && !conn.ConnectionState().SupportsDatagrams {
+			conn.CloseWithError(quic.ApplicationErrorCode(errorSettingsError), "missing QUIC Datagram support")
+		}
+	}()
+
 	for {
 		str, err := conn.AcceptUniStream(context.Background())
 		if err != nil {
@@ -413,10 +453,10 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 				s.logger.Debugf("reading stream type on stream %d failed: %s", str.StreamID(), err)
 				return
 			}
-			s.logger.Debugf("got unistream stream type: %d", streamType)
-			// We're only interested in the control stream here.
 			switch streamType {
 			case streamTypeControlStream:
+				conn.CloseWithError(quic.ApplicationErrorCode(errorStreamCreationError), "")
+				return
 			case streamTypeQPACKEncoderStream, streamTypeQPACKDecoderStream:
 				// Our QPACK implementation doesn't use the dynamic table yet.
 				// TODO: check that only one stream of each type is opened.
@@ -425,38 +465,15 @@ func (s *Server) handleUnidirectionalStreams(conn quic.EarlyConnection) {
 				conn.CloseWithError(quic.ApplicationErrorCode(errorStreamCreationError), "")
 				return
 			default:
+				if s.UniStreamHijacker != nil {
+					hijacked, err := s.UniStreamHijacker(StreamType(streamType), conn, str)
+					if err == nil && hijacked {
+						return
+					}
+				}
+
 				str.CancelRead(quic.StreamErrorCode(errorStreamCreationError))
 				return
-			}
-
-			var ufh unknownFrameHandlerFunc
-			if s.UniStreamHijacker != nil {
-				ufh = func(ft FrameType) (processed bool, err error) {
-					return s.UniStreamHijacker(ft, conn, str)
-				}
-			}
-			f, err := parseNextFrame(str, ufh)
-			s.logger.Debugf("parseNextFrame in unistream err: %s", err)
-			if err != nil {
-				if err == errHijacked {
-					return
-				}
-				conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
-				return
-			}
-			sf, ok := f.(*settingsFrame)
-			if !ok {
-				conn.CloseWithError(quic.ApplicationErrorCode(errorMissingSettings), "")
-				return
-			}
-			if !sf.Datagram {
-				return
-			}
-			// If datagram support was enabled on our side as well as on the client side,
-			// we can expect it to have been negotiated both on the transport and on the HTTP/3 layer.
-			// Note: ConnectionState() will block until the handshake is complete (relevant when using 0-RTT).
-			if s.EnableDatagrams && !conn.ConnectionState().SupportsDatagrams {
-				conn.CloseWithError(quic.ApplicationErrorCode(errorSettingsError), "missing QUIC Datagram support")
 			}
 		}(str)
 	}

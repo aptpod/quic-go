@@ -59,7 +59,7 @@ type RoundTripper struct {
 	StreamHijacker func(FrameType, quic.Connection, quic.Stream) (hijacked bool, err error)
 
 	// When set, this callback is called for the first unknown frame parsed on a unidirectional stream.
-	UniStreamHijacker func(FrameType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
+	UniStreamHijacker func(StreamType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
 
 	// Dial specifies an optional dial function for creating QUIC
 	// connections for requests.
