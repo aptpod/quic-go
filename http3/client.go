@@ -44,6 +44,7 @@ type roundTripperOpts struct {
 	MaxHeaderBytes     int64
 	AdditionalSettings map[uint64]uint64
 	StreamHijacker     func(FrameType, quic.Connection, quic.Stream) (hijacked bool, err error)
+	UniStreamHijacker  func(StreamType, quic.Connection, quic.ReceiveStream) (hijacked bool, err error)
 }
 
 // client is a HTTP3 client doing requests
@@ -174,15 +175,31 @@ func (c *client) handleUnidirectionalStreams() {
 			return
 		}
 
-		go func() {
+		go func(str quic.ReceiveStream) {
 			streamType, err := quicvarint.Read(quicvarint.NewReader(str))
 			if err != nil {
 				c.logger.Debugf("reading stream type on stream %d failed: %s", str.StreamID(), err)
 				return
 			}
-			// We're only interested in the control stream here.
 			switch streamType {
 			case streamTypeControlStream:
+				f, err := parseNextFrame(str, nil)
+				if err != nil {
+					c.conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
+					return
+				}
+				sf, ok := f.(*settingsFrame)
+				if !ok {
+					c.conn.CloseWithError(quic.ApplicationErrorCode(errorMissingSettings), "")
+					return
+				}
+
+				// If datagram support was enabled on our side as well as on the server side,
+				// we can expect it to have been negotiated both on the transport and on the HTTP/3 layer.
+				// Note: ConnectionState() will block until the handshake is complete (relevant when using 0-RTT).
+				if sf.Datagram && c.opts.EnableDatagram && !c.conn.ConnectionState().SupportsDatagrams {
+					c.conn.CloseWithError(quic.ApplicationErrorCode(errorSettingsError), "missing QUIC Datagram support")
+				}
 			case streamTypeQPACKEncoderStream, streamTypeQPACKDecoderStream:
 				// Our QPACK implementation doesn't use the dynamic table yet.
 				// TODO: check that only one stream of each type is opened.
@@ -192,29 +209,17 @@ func (c *client) handleUnidirectionalStreams() {
 				c.conn.CloseWithError(quic.ApplicationErrorCode(errorIDError), "")
 				return
 			default:
+				if c.opts.UniStreamHijacker != nil {
+					hijacked, err := c.opts.UniStreamHijacker(StreamType(streamType), c.conn, str)
+					if err == nil && hijacked {
+						return
+					}
+				}
+
 				str.CancelRead(quic.StreamErrorCode(errorStreamCreationError))
 				return
 			}
-			f, err := parseNextFrame(str, nil)
-			if err != nil {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(errorFrameError), "")
-				return
-			}
-			sf, ok := f.(*settingsFrame)
-			if !ok {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(errorMissingSettings), "")
-				return
-			}
-			if !sf.Datagram {
-				return
-			}
-			// If datagram support was enabled on our side as well as on the server side,
-			// we can expect it to have been negotiated both on the transport and on the HTTP/3 layer.
-			// Note: ConnectionState() will block until the handshake is complete (relevant when using 0-RTT).
-			if c.opts.EnableDatagram && !c.conn.ConnectionState().SupportsDatagrams {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(errorSettingsError), "missing QUIC Datagram support")
-			}
-		}()
+		}(str)
 	}
 }
 
