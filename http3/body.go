@@ -22,6 +22,8 @@ type StreamCreator interface {
 	OpenStreamSync(context.Context) (quic.Stream, error)
 	OpenUniStream() (quic.SendStream, error)
 	OpenUniStreamSync(context.Context) (quic.SendStream, error)
+	SendMessage([]byte) error
+	ReceiveMessage() ([]byte, error)
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 }
