@@ -14,6 +14,7 @@ import (
 
 type responseWriter struct {
 	conn        quic.Connection
+	stream      quic.Stream
 	bufferedStr *bufio.Writer
 
 	header        http.Header
@@ -33,6 +34,7 @@ func newResponseWriter(str quic.Stream, conn quic.Connection, logger utils.Logge
 	return &responseWriter{
 		header:      http.Header{},
 		conn:        conn,
+		stream:      str,
 		bufferedStr: bufio.NewWriter(str),
 		logger:      logger,
 	}
@@ -100,6 +102,10 @@ func (w *responseWriter) Flush() {
 
 func (w *responseWriter) StreamCreator() StreamCreator {
 	return w.conn
+}
+
+func (w *responseWriter) Stream() quic.Stream {
+	return w.stream
 }
 
 // copied from http2/http2.go
