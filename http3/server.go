@@ -535,7 +535,9 @@ func (s *Server) handleRequest(conn quic.Connection, str quic.Stream, decoder *q
 				panicked = true
 			}
 		}()
+		s.logger.Debugf("handling ServeHTTP started")
 		handler.ServeHTTP(r, req)
+		s.logger.Debugf("handling ServeHTTP done")
 	}()
 
 	if !r.usedDataStream() {
@@ -546,6 +548,7 @@ func (s *Server) handleRequest(conn quic.Connection, str quic.Stream, decoder *q
 		}
 		// If the EOF was read by the handler, CancelRead() is a no-op.
 		str.CancelRead(quic.StreamErrorCode(errorNoError))
+		s.logger.Debugf("CancelRead done after ServeHTTP")
 	}
 	return requestError{}
 }
