@@ -5,7 +5,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/lucas-clemente/quic-go"
+	"github.com/quic-go/quic-go"
 )
 
 // The HTTPStreamer allows taking over a HTTP/3 stream. The interface is implemented by:
@@ -18,6 +18,8 @@ type HTTPStreamer interface {
 }
 
 type StreamCreator interface {
+	// Context returns a context that is cancelled when the underlying connection is closed.
+	Context() context.Context
 	OpenStream() (quic.Stream, error)
 	OpenStreamSync(context.Context) (quic.Stream, error)
 	OpenUniStream() (quic.SendStream, error)
@@ -26,6 +28,7 @@ type StreamCreator interface {
 	ReceiveMessage() ([]byte, error)
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
+	ConnectionState() quic.ConnectionState
 }
 
 var _ StreamCreator = quic.Connection(nil)

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lucas-clemente/quic-go/quicvarint"
+	"github.com/quic-go/quic-go/quicvarint"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -17,19 +17,13 @@ type errReader struct{ err error }
 func (e errReader) Read([]byte) (int, error) { return 0, e.err }
 
 var _ = Describe("Frames", func() {
-	appendVarInt := func(b []byte, val uint64) []byte {
-		buf := &bytes.Buffer{}
-		quicvarint.Write(buf, val)
-		return append(b, buf.Bytes()...)
-	}
-
 	It("skips unknown frames", func() {
-		data := appendVarInt(nil, 0xdeadbeef) // type byte
-		data = appendVarInt(data, 0x42)
-		data = append(data, make([]byte, 0x42)...)
-		buf := bytes.NewBuffer(data)
-		(&dataFrame{Length: 0x1234}).Write(buf)
-		frame, err := parseNextFrame(buf, nil)
+		b := quicvarint.Append(nil, 0xdeadbeef) // type byte
+		b = quicvarint.Append(b, 0x42)
+		b = append(b, make([]byte, 0x42)...)
+		b = (&dataFrame{Length: 0x1234}).Append(b)
+		r := bytes.NewReader(b)
+		frame, err := parseNextFrame(r, nil)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(frame).To(BeAssignableToTypeOf(&dataFrame{}))
 		Expect(frame.(*dataFrame).Length).To(Equal(uint64(0x1234)))
@@ -37,8 +31,8 @@ var _ = Describe("Frames", func() {
 
 	Context("DATA frames", func() {
 		It("parses", func() {
-			data := appendVarInt(nil, 0) // type byte
-			data = appendVarInt(data, 0x1337)
+			data := quicvarint.Append(nil, 0) // type byte
+			data = quicvarint.Append(data, 0x1337)
 			frame, err := parseNextFrame(bytes.NewReader(data), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(frame).To(BeAssignableToTypeOf(&dataFrame{}))
@@ -46,9 +40,8 @@ var _ = Describe("Frames", func() {
 		})
 
 		It("writes", func() {
-			buf := &bytes.Buffer{}
-			(&dataFrame{Length: 0xdeadbeef}).Write(buf)
-			frame, err := parseNextFrame(buf, nil)
+			b := (&dataFrame{Length: 0xdeadbeef}).Append(nil)
+			frame, err := parseNextFrame(bytes.NewReader(b), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(frame).To(BeAssignableToTypeOf(&dataFrame{}))
@@ -58,8 +51,8 @@ var _ = Describe("Frames", func() {
 
 	Context("HEADERS frames", func() {
 		It("parses", func() {
-			data := appendVarInt(nil, 1) // type byte
-			data = appendVarInt(data, 0x1337)
+			data := quicvarint.Append(nil, 1) // type byte
+			data = quicvarint.Append(data, 0x1337)
 			frame, err := parseNextFrame(bytes.NewReader(data), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(frame).To(BeAssignableToTypeOf(&headersFrame{}))
@@ -67,9 +60,8 @@ var _ = Describe("Frames", func() {
 		})
 
 		It("writes", func() {
-			buf := &bytes.Buffer{}
-			(&headersFrame{Length: 0xdeadbeef}).Write(buf)
-			frame, err := parseNextFrame(buf, nil)
+			b := (&headersFrame{Length: 0xdeadbeef}).Append(nil)
+			frame, err := parseNextFrame(bytes.NewReader(b), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(frame).To(BeAssignableToTypeOf(&headersFrame{}))
@@ -79,12 +71,12 @@ var _ = Describe("Frames", func() {
 
 	Context("SETTINGS frames", func() {
 		It("parses", func() {
-			settings := appendVarInt(nil, 13)
-			settings = appendVarInt(settings, 37)
-			settings = appendVarInt(settings, 0xdead)
-			settings = appendVarInt(settings, 0xbeef)
-			data := appendVarInt(nil, 4) // type byte
-			data = appendVarInt(data, uint64(len(settings)))
+			settings := quicvarint.Append(nil, 13)
+			settings = quicvarint.Append(settings, 37)
+			settings = quicvarint.Append(settings, 0xdead)
+			settings = quicvarint.Append(settings, 0xbeef)
+			data := quicvarint.Append(nil, 4) // type byte
+			data = quicvarint.Append(data, uint64(len(settings)))
 			data = append(data, settings...)
 			frame, err := parseNextFrame(bytes.NewReader(data), nil)
 			Expect(err).ToNot(HaveOccurred())
@@ -95,12 +87,12 @@ var _ = Describe("Frames", func() {
 		})
 
 		It("rejects duplicate settings", func() {
-			settings := appendVarInt(nil, 13)
-			settings = appendVarInt(settings, 37)
-			settings = appendVarInt(settings, 13)
-			settings = appendVarInt(settings, 38)
-			data := appendVarInt(nil, 4) // type byte
-			data = appendVarInt(data, uint64(len(settings)))
+			settings := quicvarint.Append(nil, 13)
+			settings = quicvarint.Append(settings, 37)
+			settings = quicvarint.Append(settings, 13)
+			settings = quicvarint.Append(settings, 38)
+			data := quicvarint.Append(nil, 4) // type byte
+			data = quicvarint.Append(data, uint64(len(settings)))
 			data = append(data, settings...)
 			_, err := parseNextFrame(bytes.NewReader(data), nil)
 			Expect(err).To(MatchError("duplicate setting: 13"))
@@ -112,9 +104,7 @@ var _ = Describe("Frames", func() {
 				99: 999,
 				13: 37,
 			}}
-			buf := &bytes.Buffer{}
-			sf.Write(buf)
-			frame, err := parseNextFrame(buf, nil)
+			frame, err := parseNextFrame(bytes.NewReader(sf.Append(nil)), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(frame).To(Equal(sf))
 		})
@@ -124,10 +114,8 @@ var _ = Describe("Frames", func() {
 				13:         37,
 				0xdeadbeef: 0xdecafbad,
 			}}
-			buf := &bytes.Buffer{}
-			sf.Write(buf)
+			data := sf.Append(nil)
 
-			data := buf.Bytes()
 			_, err := parseNextFrame(bytes.NewReader(data), nil)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -141,10 +129,10 @@ var _ = Describe("Frames", func() {
 
 		Context("H3_DATAGRAM", func() {
 			It("reads the H3_DATAGRAM value", func() {
-				settings := appendVarInt(nil, settingDatagram)
-				settings = appendVarInt(settings, 1)
-				data := appendVarInt(nil, 4) // type byte
-				data = appendVarInt(data, uint64(len(settings)))
+				settings := quicvarint.Append(nil, settingDatagram)
+				settings = quicvarint.Append(settings, 1)
+				data := quicvarint.Append(nil, 4) // type byte
+				data = quicvarint.Append(data, uint64(len(settings)))
 				data = append(data, settings...)
 				f, err := parseNextFrame(bytes.NewReader(data), nil)
 				Expect(err).ToNot(HaveOccurred())
@@ -154,22 +142,22 @@ var _ = Describe("Frames", func() {
 			})
 
 			It("rejects duplicate H3_DATAGRAM entries", func() {
-				settings := appendVarInt(nil, settingDatagram)
-				settings = appendVarInt(settings, 1)
-				settings = appendVarInt(settings, settingDatagram)
-				settings = appendVarInt(settings, 1)
-				data := appendVarInt(nil, 4) // type byte
-				data = appendVarInt(data, uint64(len(settings)))
+				settings := quicvarint.Append(nil, settingDatagram)
+				settings = quicvarint.Append(settings, 1)
+				settings = quicvarint.Append(settings, settingDatagram)
+				settings = quicvarint.Append(settings, 1)
+				data := quicvarint.Append(nil, 4) // type byte
+				data = quicvarint.Append(data, uint64(len(settings)))
 				data = append(data, settings...)
 				_, err := parseNextFrame(bytes.NewReader(data), nil)
 				Expect(err).To(MatchError(fmt.Sprintf("duplicate setting: %d", settingDatagram)))
 			})
 
 			It("rejects invalid values for the H3_DATAGRAM entry", func() {
-				settings := appendVarInt(nil, settingDatagram)
-				settings = appendVarInt(settings, 1337)
-				data := appendVarInt(nil, 4) // type byte
-				data = appendVarInt(data, uint64(len(settings)))
+				settings := quicvarint.Append(nil, settingDatagram)
+				settings = quicvarint.Append(settings, 1337)
+				data := quicvarint.Append(nil, 4) // type byte
+				data = quicvarint.Append(data, uint64(len(settings)))
 				data = append(data, settings...)
 				_, err := parseNextFrame(bytes.NewReader(data), nil)
 				Expect(err).To(MatchError("invalid value for H3_DATAGRAM: 1337"))
@@ -177,9 +165,7 @@ var _ = Describe("Frames", func() {
 
 			It("writes the H3_DATAGRAM setting", func() {
 				sf := &settingsFrame{Datagram: true}
-				buf := &bytes.Buffer{}
-				sf.Write(buf)
-				frame, err := parseNextFrame(buf, nil)
+				frame, err := parseNextFrame(bytes.NewReader(sf.Append(nil)), nil)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(frame).To(Equal(sf))
 			})
@@ -188,8 +174,7 @@ var _ = Describe("Frames", func() {
 
 	Context("hijacking", func() {
 		It("reads a frame without hijacking the stream", func() {
-			buf := &bytes.Buffer{}
-			quicvarint.Write(buf, 1337)
+			buf := bytes.NewBuffer(quicvarint.Append(nil, 1337))
 			customFrameContents := []byte("foobar")
 			buf.Write(customFrameContents)
 
@@ -222,16 +207,15 @@ var _ = Describe("Frames", func() {
 		})
 
 		It("reads a frame without hijacking the stream", func() {
-			buf := &bytes.Buffer{}
-			quicvarint.Write(buf, 1337)
+			b := quicvarint.Append(nil, 1337)
 			customFrameContents := []byte("custom frame")
-			quicvarint.Write(buf, uint64(len(customFrameContents)))
-			buf.Write(customFrameContents)
-			(&dataFrame{Length: 6}).Write(buf)
-			buf.WriteString("foobar")
+			b = quicvarint.Append(b, uint64(len(customFrameContents)))
+			b = append(b, customFrameContents...)
+			b = (&dataFrame{Length: 6}).Append(b)
+			b = append(b, []byte("foobar")...)
 
 			var called bool
-			frame, err := parseNextFrame(buf, func(ft FrameType, e error) (hijacked bool, err error) {
+			frame, err := parseNextFrame(bytes.NewReader(b), func(ft FrameType, e error) (hijacked bool, err error) {
 				Expect(e).ToNot(HaveOccurred())
 				Expect(ft).To(BeEquivalentTo(1337))
 				called = true

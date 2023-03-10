@@ -1,8 +1,8 @@
 package handshake
 
 import (
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qtls"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qtls"
 )
 
 const (
@@ -24,7 +24,7 @@ var _ tlsExtensionHandler = &extensionHandler{}
 // newExtensionHandler creates a new extension handler
 func newExtensionHandler(params []byte, pers protocol.Perspective, v protocol.VersionNumber) tlsExtensionHandler {
 	et := uint16(quicTLSExtensionType)
-	if v != protocol.Version1 {
+	if v == protocol.VersionDraft29 {
 		et = quicTLSExtensionTypeOldDrafts
 	}
 	return &extensionHandler{

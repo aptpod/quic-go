@@ -11,17 +11,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/internal/wire"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/logging"
 
 	"github.com/francoispqt/gojay"
 )
 
 // Setting of this only works when quic-go is used as a library.
 // When building a binary from this repository, the version can be set using the following go build flag:
-// -ldflags="-X github.com/lucas-clemente/quic-go/qlog.quicGoVersion=foobar"
+// -ldflags="-X github.com/quic-go/quic-go/qlog.quicGoVersion=foobar"
 var quicGoVersion = "(devel)"
 
 func init() {
@@ -33,7 +33,7 @@ func init() {
 		return
 	}
 	for _, d := range info.Deps {
-		if d.Path == "github.com/lucas-clemente/quic-go" {
+		if d.Path == "github.com/quic-go/quic-go" {
 			quicGoVersion = d.Version
 			if d.Replace != nil {
 				if len(d.Replace.Version) > 0 {
@@ -274,7 +274,15 @@ func (t *connectionTracer) toTransportParameters(tp *wire.TransportParameters) *
 	}
 }
 
-func (t *connectionTracer) SentPacket(hdr *wire.ExtendedHeader, packetSize logging.ByteCount, ack *logging.AckFrame, frames []logging.Frame) {
+func (t *connectionTracer) SentLongHeaderPacket(hdr *logging.ExtendedHeader, packetSize logging.ByteCount, ack *logging.AckFrame, frames []logging.Frame) {
+	t.sentPacket(*transformLongHeader(hdr), packetSize, hdr.Length, ack, frames)
+}
+
+func (t *connectionTracer) SentShortHeaderPacket(hdr *logging.ShortHeader, packetSize logging.ByteCount, ack *logging.AckFrame, frames []logging.Frame) {
+	t.sentPacket(*transformShortHeader(hdr), packetSize, 0, ack, frames)
+}
+
+func (t *connectionTracer) sentPacket(hdr gojay.MarshalerJSONObject, packetSize, payloadLen logging.ByteCount, ack *logging.AckFrame, frames []logging.Frame) {
 	numFrames := len(frames)
 	if ack != nil {
 		numFrames++
@@ -286,9 +294,24 @@ func (t *connectionTracer) SentPacket(hdr *wire.ExtendedHeader, packetSize loggi
 	for _, f := range frames {
 		fs = append(fs, frame{Frame: f})
 	}
-	header := *transformExtendedHeader(hdr)
 	t.mutex.Lock()
 	t.recordEvent(time.Now(), &eventPacketSent{
+		Header:        hdr,
+		Length:        packetSize,
+		PayloadLength: payloadLen,
+		Frames:        fs,
+	})
+	t.mutex.Unlock()
+}
+
+func (t *connectionTracer) ReceivedLongHeaderPacket(hdr *logging.ExtendedHeader, packetSize logging.ByteCount, frames []logging.Frame) {
+	fs := make([]frame, len(frames))
+	for i, f := range frames {
+		fs[i] = frame{Frame: f}
+	}
+	header := *transformLongHeader(hdr)
+	t.mutex.Lock()
+	t.recordEvent(time.Now(), &eventPacketReceived{
 		Header:        header,
 		Length:        packetSize,
 		PayloadLength: hdr.Length,
@@ -297,17 +320,17 @@ func (t *connectionTracer) SentPacket(hdr *wire.ExtendedHeader, packetSize loggi
 	t.mutex.Unlock()
 }
 
-func (t *connectionTracer) ReceivedPacket(hdr *wire.ExtendedHeader, packetSize logging.ByteCount, frames []logging.Frame) {
+func (t *connectionTracer) ReceivedShortHeaderPacket(hdr *logging.ShortHeader, packetSize logging.ByteCount, frames []logging.Frame) {
 	fs := make([]frame, len(frames))
 	for i, f := range frames {
 		fs[i] = frame{Frame: f}
 	}
-	header := *transformExtendedHeader(hdr)
+	header := *transformShortHeader(hdr)
 	t.mutex.Lock()
 	t.recordEvent(time.Now(), &eventPacketReceived{
 		Header:        header,
 		Length:        packetSize,
-		PayloadLength: hdr.Length,
+		PayloadLength: packetSize - wire.ShortHeaderLen(hdr.DestConnectionID, hdr.PacketNumberLen),
 		Frames:        fs,
 	})
 	t.mutex.Unlock()
@@ -337,9 +360,12 @@ func (t *connectionTracer) ReceivedVersionNegotiationPacket(dest, src logging.Ar
 	t.mutex.Unlock()
 }
 
-func (t *connectionTracer) BufferedPacket(pt logging.PacketType) {
+func (t *connectionTracer) BufferedPacket(pt logging.PacketType, size protocol.ByteCount) {
 	t.mutex.Lock()
-	t.recordEvent(time.Now(), &eventPacketBuffered{PacketType: pt})
+	t.recordEvent(time.Now(), &eventPacketBuffered{
+		PacketType: pt,
+		PacketSize: size,
+	})
 	t.mutex.Unlock()
 }
 
@@ -429,10 +455,10 @@ func (t *connectionTracer) DroppedEncryptionLevel(encLevel protocol.EncryptionLe
 	t.mutex.Lock()
 	now := time.Now()
 	if encLevel == protocol.Encryption0RTT {
-		t.recordEvent(now, &eventKeyRetired{KeyType: encLevelToKeyType(encLevel, t.perspective)})
+		t.recordEvent(now, &eventKeyDiscarded{KeyType: encLevelToKeyType(encLevel, t.perspective)})
 	} else {
-		t.recordEvent(now, &eventKeyRetired{KeyType: encLevelToKeyType(encLevel, protocol.PerspectiveServer)})
-		t.recordEvent(now, &eventKeyRetired{KeyType: encLevelToKeyType(encLevel, protocol.PerspectiveClient)})
+		t.recordEvent(now, &eventKeyDiscarded{KeyType: encLevelToKeyType(encLevel, protocol.PerspectiveServer)})
+		t.recordEvent(now, &eventKeyDiscarded{KeyType: encLevelToKeyType(encLevel, protocol.PerspectiveClient)})
 	}
 	t.mutex.Unlock()
 }
@@ -440,11 +466,11 @@ func (t *connectionTracer) DroppedEncryptionLevel(encLevel protocol.EncryptionLe
 func (t *connectionTracer) DroppedKey(generation protocol.KeyPhase) {
 	t.mutex.Lock()
 	now := time.Now()
-	t.recordEvent(now, &eventKeyRetired{
+	t.recordEvent(now, &eventKeyDiscarded{
 		KeyType:    encLevelToKeyType(protocol.Encryption1RTT, protocol.PerspectiveServer),
 		Generation: generation,
 	})
-	t.recordEvent(now, &eventKeyRetired{
+	t.recordEvent(now, &eventKeyDiscarded{
 		KeyType:    encLevelToKeyType(protocol.Encryption1RTT, protocol.PerspectiveClient),
 		Generation: generation,
 	})

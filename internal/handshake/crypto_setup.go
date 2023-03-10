@@ -6,17 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
-	"github.com/lucas-clemente/quic-go/internal/qtls"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/internal/wire"
-	"github.com/lucas-clemente/quic-go/logging"
-	"github.com/lucas-clemente/quic-go/quicvarint"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/qtls"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/logging"
+	"github.com/quic-go/quic-go/quicvarint"
 )
 
 // TLS unexpected_message alert
@@ -115,6 +116,7 @@ type cryptoSetup struct {
 	clientHelloWritten     bool
 	clientHelloWrittenChan chan struct{} // is closed as soon as the ClientHello is written
 	zeroRTTParametersChan  chan<- *wire.TransportParameters
+	allow0RTT              func() bool
 
 	rttStats *utils.RTTStats
 
@@ -195,7 +197,7 @@ func NewCryptoSetupServer(
 	tp *wire.TransportParameters,
 	runner handshakeRunner,
 	tlsConf *tls.Config,
-	enable0RTT bool,
+	allow0RTT func() bool,
 	rttStats *utils.RTTStats,
 	tracer logging.ConnectionTracer,
 	logger utils.Logger,
@@ -208,13 +210,14 @@ func NewCryptoSetupServer(
 		tp,
 		runner,
 		tlsConf,
-		enable0RTT,
+		allow0RTT != nil,
 		rttStats,
 		tracer,
 		logger,
 		protocol.PerspectiveServer,
 		version,
 	)
+	cs.allow0RTT = allow0RTT
 	cs.conn = qtls.Server(newConn(localAddr, remoteAddr, version), cs.tlsConf, cs.extraConf)
 	return cs
 }
@@ -260,14 +263,14 @@ func newCryptoSetup(
 		alertChan:                 make(chan uint8),
 		clientHelloWrittenChan:    make(chan struct{}),
 		zeroRTTParametersChan:     zeroRTTParametersChan,
-		messageChan:               make(chan []byte, 100),
+		messageChan:               make(chan []byte, 1),
 		isReadingHandshakeMessage: make(chan struct{}),
 		closeChan:                 make(chan struct{}),
 		version:                   version,
 	}
 	var maxEarlyData uint32
 	if enable0RTT {
-		maxEarlyData = 0xffffffff
+		maxEarlyData = math.MaxUint32
 	}
 	cs.extraConf = &qtls.ExtraConfig{
 		GetExtensions:              extHandler.GetExtensions,
@@ -340,7 +343,7 @@ func (h *cryptoSetup) onError(alert uint8, message string) {
 	if alert == 0 {
 		err = &qerr.TransportError{ErrorCode: qerr.InternalError, ErrorMessage: message}
 	} else {
-		err = qerr.NewCryptoError(alert, message)
+		err = qerr.NewLocalCryptoError(alert, message)
 	}
 	h.runner.OnError(err)
 }
@@ -365,8 +368,15 @@ func (h *cryptoSetup) HandleMessage(data []byte, encLevel protocol.EncryptionLev
 		h.onError(alertUnexpectedMessage, err.Error())
 		return false
 	}
-	h.messageChan <- data
+	if encLevel != protocol.Encryption1RTT {
+		select {
+		case h.messageChan <- data:
+		case <-h.handshakeDone: // handshake errored, nobody is going to consume this message
+			return false
+		}
+	}
 	if encLevel == protocol.Encryption1RTT {
+		h.messageChan <- data
 		h.handlePostHandshakeMessage()
 		return false
 	}
@@ -490,13 +500,17 @@ func (h *cryptoSetup) accept0RTT(sessionTicketData []byte) bool {
 		return false
 	}
 	valid := h.ourParams.ValidFor0RTT(t.Parameters)
-	if valid {
-		h.logger.Debugf("Accepting 0-RTT. Restoring RTT from session ticket: %s", t.RTT)
-		h.rttStats.SetInitialRTT(t.RTT)
-	} else {
+	if !valid {
 		h.logger.Debugf("Transport parameters changed. Rejecting 0-RTT.")
+		return false
 	}
-	return valid
+	if !h.allow0RTT() {
+		h.logger.Debugf("0-RTT not allowed. Rejecting 0-RTT.")
+		return false
+	}
+	h.logger.Debugf("Accepting 0-RTT. Restoring RTT from session ticket: %s", t.RTT)
+	h.rttStats.SetInitialRTT(t.RTT)
+	return true
 }
 
 // rejected0RTT is called for the client when the server rejects 0-RTT.
@@ -575,7 +589,9 @@ func (h *cryptoSetup) SetReadKey(encLevel qtls.EncryptionLevel, suite *qtls.Ciph
 			newHeaderProtector(suite, trafficSecret, true, h.version),
 		)
 		h.mutex.Unlock()
-		h.logger.Debugf("Installed 0-RTT Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed 0-RTT Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 		if h.tracer != nil {
 			h.tracer.UpdatedKeyFromTLS(protocol.Encryption0RTT, h.perspective.Opposite())
 		}
@@ -588,12 +604,16 @@ func (h *cryptoSetup) SetReadKey(encLevel qtls.EncryptionLevel, suite *qtls.Ciph
 			h.dropInitialKeys,
 			h.perspective,
 		)
-		h.logger.Debugf("Installed Handshake Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed Handshake Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 	case qtls.EncryptionApplication:
 		h.readEncLevel = protocol.Encryption1RTT
 		h.aead.SetReadKey(suite, trafficSecret)
 		h.has1RTTOpener = true
-		h.logger.Debugf("Installed 1-RTT Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed 1-RTT Read keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 	default:
 		panic("unexpected read encryption level")
 	}
@@ -615,7 +635,9 @@ func (h *cryptoSetup) SetWriteKey(encLevel qtls.EncryptionLevel, suite *qtls.Cip
 			newHeaderProtector(suite, trafficSecret, true, h.version),
 		)
 		h.mutex.Unlock()
-		h.logger.Debugf("Installed 0-RTT Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed 0-RTT Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 		if h.tracer != nil {
 			h.tracer.UpdatedKeyFromTLS(protocol.Encryption0RTT, h.perspective)
 		}
@@ -628,12 +650,16 @@ func (h *cryptoSetup) SetWriteKey(encLevel qtls.EncryptionLevel, suite *qtls.Cip
 			h.dropInitialKeys,
 			h.perspective,
 		)
-		h.logger.Debugf("Installed Handshake Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed Handshake Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 	case qtls.EncryptionApplication:
 		h.writeEncLevel = protocol.Encryption1RTT
 		h.aead.SetWriteKey(suite, trafficSecret)
 		h.has1RTTSealer = true
-		h.logger.Debugf("Installed 1-RTT Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		if h.logger.Debug() {
+			h.logger.Debugf("Installed 1-RTT Write keys (using %s)", tls.CipherSuiteName(suite.ID))
+		}
 		if h.zeroRTTSealer != nil {
 			h.zeroRTTSealer = nil
 			h.logger.Debugf("Dropping 0-RTT keys.")

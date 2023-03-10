@@ -7,15 +7,17 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/marten-seemann/qpack"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/internal/utils"
+
+	"github.com/quic-go/qpack"
 )
 
 type responseWriter struct {
 	conn        quic.Connection
 	stream      quic.Stream
 	bufferedStr *bufio.Writer
+	buf         []byte
 
 	header        http.Header
 	status        int // status code passed to WriteHeader
@@ -33,6 +35,7 @@ var (
 func newResponseWriter(str quic.Stream, conn quic.Connection, logger utils.Logger) *responseWriter {
 	return &responseWriter{
 		header:      http.Header{},
+		buf:         make([]byte, 16),
 		conn:        conn,
 		stream:      str,
 		bufferedStr: bufio.NewWriter(str),
@@ -64,10 +67,10 @@ func (w *responseWriter) WriteHeader(status int) {
 		}
 	}
 
-	buf := &bytes.Buffer{}
-	(&headersFrame{Length: uint64(headers.Len())}).Write(buf)
+	w.buf = w.buf[:0]
+	w.buf = (&headersFrame{Length: uint64(headers.Len())}).Append(w.buf)
 	w.logger.Infof("Responding with %d", status)
-	if _, err := w.bufferedStr.Write(buf.Bytes()); err != nil {
+	if _, err := w.bufferedStr.Write(w.buf); err != nil {
 		w.logger.Errorf("could not write headers frame: %s", err.Error())
 	}
 	if _, err := w.bufferedStr.Write(headers.Bytes()); err != nil {
@@ -79,16 +82,32 @@ func (w *responseWriter) WriteHeader(status int) {
 }
 
 func (w *responseWriter) Write(p []byte) (int, error) {
+	bodyAllowed := bodyAllowedForStatus(w.status)
 	if !w.headerWritten {
-		w.WriteHeader(200)
+		// If body is not allowed, we don't need to (and we can't) sniff the content type.
+		if bodyAllowed {
+			// If no content type, apply sniffing algorithm to body.
+			// We can't use `w.header.Get` here since if the Content-Type was set to nil, we shoundn't do sniffing.
+			_, haveType := w.header["Content-Type"]
+
+			// If the Transfer-Encoding or Content-Encoding was set and is non-blank,
+			// we shouldn't sniff the body.
+			hasTE := w.header.Get("Transfer-Encoding") != ""
+			hasCE := w.header.Get("Content-Encoding") != ""
+			if !hasCE && !haveType && !hasTE && len(p) > 0 {
+				w.header.Set("Content-Type", http.DetectContentType(p))
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		bodyAllowed = true
 	}
-	if !bodyAllowedForStatus(w.status) {
+	if !bodyAllowed {
 		return 0, http.ErrBodyNotAllowed
 	}
 	df := &dataFrame{Length: uint64(len(p))}
-	buf := &bytes.Buffer{}
-	df.Write(buf)
-	if _, err := w.bufferedStr.Write(buf.Bytes()); err != nil {
+	w.buf = w.buf[:0]
+	w.buf = df.Append(w.buf)
+	if _, err := w.bufferedStr.Write(w.buf); err != nil {
 		return 0, err
 	}
 	return w.bufferedStr.Write(p)
@@ -119,9 +138,9 @@ func bodyAllowedForStatus(status int) bool {
 	switch {
 	case status >= 100 && status <= 199:
 		return false
-	case status == 204:
+	case status == http.StatusNoContent:
 		return false
-	case status == 304:
+	case status == http.StatusNotModified:
 		return false
 	}
 	return true

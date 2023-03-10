@@ -6,8 +6,9 @@ import (
 
 	"golang.org/x/exp/rand"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	. "github.com/onsi/ginkgo"
+	"github.com/quic-go/quic-go/internal/protocol"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 

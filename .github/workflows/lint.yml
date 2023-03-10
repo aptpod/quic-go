@@ -4,10 +4,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
         with:
-          go-version: "1.19.x"
+          go-version: "1.20.x"
       - name: Check that no non-test files import Ginkgo or Gomega
         run: .github/workflows/no_ginkgo.sh
       - name: Check that go.mod is tidied
@@ -24,8 +24,8 @@ jobs:
   golangci-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
         with:
           go-version: "1.19.x"
       - name: golangci-lint

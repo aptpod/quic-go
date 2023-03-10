@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/congestion"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/internal/wire"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go/internal/congestion"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/logging"
 )
 
 const (
@@ -23,6 +23,8 @@ const (
 	amplificationFactor = 3
 	// We use Retry packets to derive an RTT estimate. Make sure we don't set the RTT to a super low value yet.
 	minRTTAfterRetry = 5 * time.Millisecond
+	// The PTO duration uses exponential backoff, but is truncated to a maximum value, as allowed by RFC 8961, section 4.4.
+	maxPTODuration = 60 * time.Second
 )
 
 type packetNumberSpace struct {
@@ -226,14 +228,20 @@ func (h *sentPacketHandler) packetsInFlight() int {
 	return packetsInFlight
 }
 
-func (h *sentPacketHandler) SentPacket(packet *Packet) {
-	h.bytesSent += packet.Length
+func (h *sentPacketHandler) SentPacket(p *Packet) {
+	h.bytesSent += p.Length
 	// For the client, drop the Initial packet number space when the first Handshake packet is sent.
-	if h.perspective == protocol.PerspectiveClient && packet.EncryptionLevel == protocol.EncryptionHandshake && h.initialPackets != nil {
+	if h.perspective == protocol.PerspectiveClient && p.EncryptionLevel == protocol.EncryptionHandshake && h.initialPackets != nil {
 		h.dropPackets(protocol.EncryptionInitial)
 	}
-	isAckEliciting := h.sentPacketImpl(packet)
-	h.getPacketNumberSpace(packet.EncryptionLevel).history.SentPacket(packet, isAckEliciting)
+	isAckEliciting := h.sentPacketImpl(p)
+	if isAckEliciting {
+		h.getPacketNumberSpace(p.EncryptionLevel).history.SentAckElicitingPacket(p)
+	} else {
+		h.getPacketNumberSpace(p.EncryptionLevel).history.SentNonAckElicitingPacket(p.PacketNumber, p.EncryptionLevel, p.SendTime)
+		putPacket(p)
+		p = nil //nolint:ineffassign // This is just to be on the safe side.
+	}
 	if h.tracer != nil && isAckEliciting {
 		h.tracer.UpdatedMetrics(h.rttStats, h.congestion.GetCongestionWindow(), h.bytesInFlight, h.packetsInFlight())
 	}
@@ -451,6 +459,14 @@ func (h *sentPacketHandler) getLossTimeAndSpace() (time.Time, protocol.Encryptio
 	return lossTime, encLevel
 }
 
+func (h *sentPacketHandler) getScaledPTO(includeMaxAckDelay bool) time.Duration {
+	pto := h.rttStats.PTO(includeMaxAckDelay) << h.ptoCount
+	if pto > maxPTODuration || pto <= 0 {
+		return maxPTODuration
+	}
+	return pto
+}
+
 // same logic as getLossTimeAndSpace, but for lastAckElicitingPacketTime instead of lossTime
 func (h *sentPacketHandler) getPTOTimeAndSpace() (pto time.Time, encLevel protocol.EncryptionLevel, ok bool) {
 	// We only send application data probe packets once the handshake is confirmed,
@@ -459,7 +475,7 @@ func (h *sentPacketHandler) getPTOTimeAndSpace() (pto time.Time, encLevel protoc
 		if h.peerCompletedAddressValidation {
 			return
 		}
-		t := time.Now().Add(h.rttStats.PTO(false) << h.ptoCount)
+		t := time.Now().Add(h.getScaledPTO(false))
 		if h.initialPackets != nil {
 			return t, protocol.EncryptionInitial, true
 		}
@@ -469,18 +485,18 @@ func (h *sentPacketHandler) getPTOTimeAndSpace() (pto time.Time, encLevel protoc
 	if h.initialPackets != nil {
 		encLevel = protocol.EncryptionInitial
 		if t := h.initialPackets.lastAckElicitingPacketTime; !t.IsZero() {
-			pto = t.Add(h.rttStats.PTO(false) << h.ptoCount)
+			pto = t.Add(h.getScaledPTO(false))
 		}
 	}
 	if h.handshakePackets != nil && !h.handshakePackets.lastAckElicitingPacketTime.IsZero() {
-		t := h.handshakePackets.lastAckElicitingPacketTime.Add(h.rttStats.PTO(false) << h.ptoCount)
+		t := h.handshakePackets.lastAckElicitingPacketTime.Add(h.getScaledPTO(false))
 		if pto.IsZero() || (!t.IsZero() && t.Before(pto)) {
 			pto = t
 			encLevel = protocol.EncryptionHandshake
 		}
 	}
 	if h.handshakeConfirmed && !h.appDataPackets.lastAckElicitingPacketTime.IsZero() {
-		t := h.appDataPackets.lastAckElicitingPacketTime.Add(h.rttStats.PTO(true) << h.ptoCount)
+		t := h.appDataPackets.lastAckElicitingPacketTime.Add(h.getScaledPTO(true))
 		if pto.IsZero() || (!t.IsZero() && t.Before(pto)) {
 			pto = t
 			encLevel = protocol.Encryption1RTT

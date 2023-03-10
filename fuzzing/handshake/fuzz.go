@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/fuzzing/internal/helper"
-	"github.com/lucas-clemente/quic-go/internal/handshake"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/fuzzing/internal/helper"
+	"github.com/quic-go/quic-go/internal/handshake"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
 )
 
 var (
@@ -390,6 +390,10 @@ func runHandshake(runConfig [confLen]byte, messageConfig uint8, clientConf *tls.
 		protocol.VersionTLS,
 	)
 
+	var allow0RTT func() bool
+	if enable0RTTServer {
+		allow0RTT = func() bool { return true }
+	}
 	sChunkChan, sInitialStream, sHandshakeStream := initStreams()
 	server = handshake.NewCryptoSetupServer(
 		sInitialStream,
@@ -400,7 +404,7 @@ func runHandshake(runConfig [confLen]byte, messageConfig uint8, clientConf *tls.
 		serverTP,
 		runner,
 		serverConf,
-		enable0RTTServer,
+		allow0RTT,
 		utils.NewRTTStats(),
 		nil,
 		utils.DefaultLogger.WithPrefix("server"),

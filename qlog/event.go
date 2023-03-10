@@ -6,10 +6,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/logging"
 
 	"github.com/francoispqt/gojay"
 )
@@ -154,7 +154,7 @@ func (e eventConnectionClosed) MarshalJSONObject(enc *gojay.Encoder) {
 }
 
 type eventPacketSent struct {
-	Header        packetHeader
+	Header        gojay.MarshalerJSONObject // either a shortHeader or a packetHeader
 	Length        logging.ByteCount
 	PayloadLength logging.ByteCount
 	Frames        frames
@@ -177,7 +177,7 @@ func (e eventPacketSent) MarshalJSONObject(enc *gojay.Encoder) {
 }
 
 type eventPacketReceived struct {
-	Header        packetHeader
+	Header        gojay.MarshalerJSONObject // either a shortHeader or a packetHeader
 	Length        logging.ByteCount
 	PayloadLength logging.ByteCount
 	Frames        frames
@@ -227,6 +227,7 @@ func (e eventVersionNegotiationReceived) MarshalJSONObject(enc *gojay.Encoder) {
 
 type eventPacketBuffered struct {
 	PacketType logging.PacketType
+	PacketSize protocol.ByteCount
 }
 
 func (e eventPacketBuffered) Category() category { return categoryTransport }
@@ -236,6 +237,7 @@ func (e eventPacketBuffered) IsNil() bool        { return false }
 func (e eventPacketBuffered) MarshalJSONObject(enc *gojay.Encoder) {
 	//nolint:gosimple
 	enc.ObjectKey("header", packetHeaderWithType{PacketType: e.PacketType})
+	enc.ObjectKey("raw", rawInfo{Length: e.PacketSize})
 	enc.StringKey("trigger", "keys_unavailable")
 }
 
@@ -349,16 +351,16 @@ func (e eventKeyUpdated) MarshalJSONObject(enc *gojay.Encoder) {
 	}
 }
 
-type eventKeyRetired struct {
+type eventKeyDiscarded struct {
 	KeyType    keyType
 	Generation protocol.KeyPhase
 }
 
-func (e eventKeyRetired) Category() category { return categorySecurity }
-func (e eventKeyRetired) Name() string       { return "key_retired" }
-func (e eventKeyRetired) IsNil() bool        { return false }
+func (e eventKeyDiscarded) Category() category { return categorySecurity }
+func (e eventKeyDiscarded) Name() string       { return "key_discarded" }
+func (e eventKeyDiscarded) IsNil() bool        { return false }
 
-func (e eventKeyRetired) MarshalJSONObject(enc *gojay.Encoder) {
+func (e eventKeyDiscarded) MarshalJSONObject(enc *gojay.Encoder) {
 	if e.KeyType != keyTypeClient1RTT && e.KeyType != keyTypeServer1RTT {
 		enc.StringKey("trigger", "tls")
 	}

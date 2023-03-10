@@ -1,15 +1,23 @@
 package ackhandler
 
 import (
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	list "github.com/lucas-clemente/quic-go/internal/utils/linkedlist"
-	"github.com/lucas-clemente/quic-go/internal/wire"
+	"sync"
+
+	"github.com/quic-go/quic-go/internal/protocol"
+	list "github.com/quic-go/quic-go/internal/utils/linkedlist"
+	"github.com/quic-go/quic-go/internal/wire"
 )
 
 // interval is an interval from one PacketNumber to the other
 type interval struct {
 	Start protocol.PacketNumber
 	End   protocol.PacketNumber
+}
+
+var intervalElementPool sync.Pool
+
+func init() {
+	intervalElementPool = *list.NewPool[interval]()
 }
 
 // The receivedPacketHistory stores if a packet number has already been received.
@@ -23,7 +31,7 @@ type receivedPacketHistory struct {
 
 func newReceivedPacketHistory() *receivedPacketHistory {
 	return &receivedPacketHistory{
-		ranges: list.New[interval](),
+		ranges: list.NewWithPool[interval](&intervalElementPool),
 	}
 }
 
@@ -107,17 +115,12 @@ func (h *receivedPacketHistory) DeleteBelow(p protocol.PacketNumber) {
 	}
 }
 
-// GetAckRanges gets a slice of all AckRanges that can be used in an AckFrame
-func (h *receivedPacketHistory) GetAckRanges() []wire.AckRange {
-	if h.ranges.Len() == 0 {
-		return nil
-	}
-
-	ackRanges := make([]wire.AckRange, h.ranges.Len())
-	i := 0
-	for el := h.ranges.Back(); el != nil; el = el.Prev() {
-		ackRanges[i] = wire.AckRange{Smallest: el.Value.Start, Largest: el.Value.End}
-		i++
+// AppendAckRanges appends to a slice of all AckRanges that can be used in an AckFrame
+func (h *receivedPacketHistory) AppendAckRanges(ackRanges []wire.AckRange) []wire.AckRange {
+	if h.ranges.Len() > 0 {
+		for el := h.ranges.Back(); el != nil; el = el.Prev() {
+			ackRanges = append(ackRanges, wire.AckRange{Smallest: el.Value.Start, Largest: el.Value.End})
+		}
 	}
 	return ackRanges
 }

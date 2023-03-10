@@ -6,13 +6,13 @@ import (
 
 	"github.com/golang/mock/gomock"
 
-	"github.com/lucas-clemente/quic-go/internal/mocks"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/internal/mocks"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -54,7 +54,7 @@ var _ = Describe("SentPacketHandler", func() {
 			p.SendTime = time.Now()
 		}
 		if len(p.Frames) == 0 {
-			p.Frames = []Frame{
+			p.Frames = []*Frame{
 				{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { lostPackets = append(lostPackets, p.PacketNumber) }},
 			}
 		}
@@ -190,7 +190,7 @@ var _ = Describe("SentPacketHandler", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(handler.appDataPackets.largestAcked).To(Equal(protocol.PacketNumber(3)))
 				// this wouldn't happen in practice
-				// for testing purposes, we pretend send a different ACK frame in a duplicated packet, to be able to verify that it actually doesn't get processed
+				// for testing purposes, we pretend to send a different ACK frame in a duplicated packet, to be able to verify that it actually doesn't get processed
 				_, err = handler.ReceivedAck(ack2, protocol.Encryption1RTT, time.Now())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(handler.appDataPackets.largestAcked).To(Equal(protocol.PacketNumber(4)))
@@ -276,7 +276,7 @@ var _ = Describe("SentPacketHandler", func() {
 				ping := &wire.PingFrame{}
 				handler.SentPacket(ackElicitingPacket(&Packet{
 					PacketNumber: 13,
-					Frames: []Frame{{
+					Frames: []*Frame{{
 						Frame: ping, OnAcked: func(f wire.Frame) {
 							Expect(f).To(Equal(ping))
 							acked = true
@@ -428,20 +428,20 @@ var _ = Describe("SentPacketHandler", func() {
 					{
 						PacketNumber:    13,
 						LargestAcked:    100,
-						Frames:          []Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
+						Frames:          []*Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
 						Length:          1,
 						EncryptionLevel: protocol.Encryption1RTT,
 					},
 					{
 						PacketNumber:    14,
 						LargestAcked:    200,
-						Frames:          []Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
+						Frames:          []*Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
 						Length:          1,
 						EncryptionLevel: protocol.Encryption1RTT,
 					},
 					{
 						PacketNumber:    15,
-						Frames:          []Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
+						Frames:          []*Frame{{Frame: &streamFrame, OnLost: func(wire.Frame) {}}},
 						Length:          1,
 						EncryptionLevel: protocol.Encryption1RTT,
 					},
@@ -501,7 +501,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(&Packet{
 				PacketNumber:    1,
 				Length:          42,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) {}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) {}}},
 				EncryptionLevel: protocol.Encryption1RTT,
 			})
 		})
@@ -548,7 +548,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:         1,
 				SendTime:             time.Now().Add(-time.Hour),
 				IsPathMTUProbePacket: true,
-				Frames:               []Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { mtuPacketDeclaredLost = true }}},
+				Frames:               []*Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { mtuPacketDeclaredLost = true }}},
 			}))
 			handler.SentPacket(ackElicitingPacket(&Packet{PacketNumber: 2}))
 			// lose packet 1, but don't EXPECT any calls to OnPacketLost()
@@ -595,7 +595,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(&Packet{
 				Length:          42,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			cong.EXPECT().CanSend(protocol.ByteCount(42)).Return(true)
@@ -687,6 +687,14 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.ptoCount = 2
 			handler.setLossDetectionTimer()
 			Expect(handler.GetLossDetectionTimeout().Sub(sendTime)).To(Equal(4 * timeout))
+			// truncated when the exponential gets too large
+			handler.ptoCount = 20
+			handler.setLossDetectionTimer()
+			Expect(handler.GetLossDetectionTimeout().Sub(sendTime)).To(Equal(maxPTODuration))
+			// protected from rollover
+			handler.ptoCount = 100
+			handler.setLossDetectionTimer()
+			Expect(handler.GetLossDetectionTimeout().Sub(sendTime)).To(Equal(maxPTODuration))
 		})
 
 		It("reset the PTO count when receiving an ACK", func() {
@@ -747,7 +755,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(ackElicitingPacket(&Packet{
 				PacketNumber: 1,
 				SendTime:     time.Now().Add(-time.Hour),
-				Frames: []Frame{
+				Frames: []*Frame{
 					{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { lostPackets = append(lostPackets, 1) }},
 				},
 			}))
@@ -767,7 +775,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(ackElicitingPacket(&Packet{
 				PacketNumber: pn,
 				SendTime:     time.Now().Add(-time.Hour),
-				Frames: []Frame{
+				Frames: []*Frame{
 					{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { lostPackets = append(lostPackets, 1) }},
 				},
 			}))
@@ -887,7 +895,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:    1,
 				Length:          599,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			Expect(handler.SendMode()).To(Equal(SendAny))
@@ -895,7 +903,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:    2,
 				Length:          1,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			Expect(handler.SendMode()).To(Equal(SendNone))
@@ -907,7 +915,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:    1,
 				Length:          900,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			// Amplification limited. We don't need to set a timer now.
@@ -923,7 +931,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:    1,
 				Length:          900,
 				EncryptionLevel: protocol.EncryptionHandshake,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			// Amplification limited. We don't need to set a timer now.
@@ -957,7 +965,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:    1,
 				Length:          900,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames:          []Frame{{Frame: &wire.PingFrame{}}},
+				Frames:          []*Frame{{Frame: &wire.PingFrame{}}},
 				SendTime:        time.Now(),
 			})
 			Expect(handler.SendMode()).To(Equal(SendAny))
@@ -1036,7 +1044,7 @@ var _ = Describe("SentPacketHandler", func() {
 		})
 
 		It("correctly sets the timer after the Initial packet number space has been dropped", func() {
-			handler.SentPacket(initialPacket(&Packet{PacketNumber: 1, SendTime: time.Now().Add(-42 * time.Second)}))
+			handler.SentPacket(initialPacket(&Packet{PacketNumber: 1, SendTime: time.Now().Add(-19 * time.Second)}))
 			_, err := handler.ReceivedAck(
 				&wire.AckFrame{AckRanges: []wire.AckRange{{Smallest: 1, Largest: 1}}},
 				protocol.EncryptionInitial,
@@ -1048,6 +1056,8 @@ var _ = Describe("SentPacketHandler", func() {
 
 			pto := handler.rttStats.PTO(false)
 			Expect(pto).ToNot(BeZero())
+			// pto is approximately 19 * 3. Using a number > 19 above will
+			// run into the maxPTODuration limit
 			Expect(handler.GetLossDetectionTimeout()).To(BeTemporally("~", time.Now().Add(pto), 10*time.Millisecond))
 		})
 
@@ -1148,7 +1158,7 @@ var _ = Describe("SentPacketHandler", func() {
 				PacketNumber:         1,
 				SendTime:             now.Add(-3 * time.Second),
 				IsPathMTUProbePacket: true,
-				Frames:               []Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { mtuPacketDeclaredLost = true }}},
+				Frames:               []*Frame{{Frame: &wire.PingFrame{}, OnLost: func(wire.Frame) { mtuPacketDeclaredLost = true }}},
 			}))
 			handler.SentPacket(ackElicitingPacket(&Packet{PacketNumber: 2, SendTime: now.Add(-3 * time.Second)}))
 			ack := &wire.AckFrame{AckRanges: []wire.AckRange{{Smallest: 2, Largest: 2}}}
@@ -1331,7 +1341,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(&Packet{
 				PacketNumber:    13,
 				EncryptionLevel: protocol.EncryptionInitial,
-				Frames: []Frame{
+				Frames: []*Frame{
 					{Frame: &wire.CryptoFrame{Data: []byte("foobar")}, OnLost: func(wire.Frame) { lostInitial = true }},
 				},
 				Length: 100,
@@ -1340,7 +1350,7 @@ var _ = Describe("SentPacketHandler", func() {
 			handler.SentPacket(&Packet{
 				PacketNumber:    pn,
 				EncryptionLevel: protocol.Encryption0RTT,
-				Frames: []Frame{
+				Frames: []*Frame{
 					{Frame: &wire.StreamFrame{Data: []byte("foobar")}, OnLost: func(wire.Frame) { lost0RTT = true }},
 				},
 				Length: 999,

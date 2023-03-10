@@ -14,12 +14,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/http3"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/testdata"
+	"golang.org/x/sync/errgroup"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 )
@@ -119,6 +120,27 @@ var _ = Describe("HTTP tests", func() {
 				body, err := io.ReadAll(gbytes.TimeoutReader(resp.Body, 3*time.Second))
 				Expect(err).ToNot(HaveOccurred())
 				Expect(string(body)).To(Equal("Hello, World!\n"))
+			})
+
+			It("downloads concurrently", func() {
+				group, ctx := errgroup.WithContext(context.Background())
+				for i := 0; i < 2; i++ {
+					group.Go(func() error {
+						req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://localhost:"+port+"/hello", nil)
+						Expect(err).ToNot(HaveOccurred())
+						resp, err := client.Do(req)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(resp.StatusCode).To(Equal(200))
+						body, err := io.ReadAll(gbytes.TimeoutReader(resp.Body, 3*time.Second))
+						Expect(err).ToNot(HaveOccurred())
+						Expect(string(body)).To(Equal("Hello, World!\n"))
+
+						return nil
+					})
+				}
+
+				err := group.Wait()
+				Expect(err).ToNot(HaveOccurred())
 			})
 
 			It("sets and gets request headers", func() {
@@ -351,6 +373,29 @@ var _ = Describe("HTTP tests", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(repl).To(Equal(data))
 			})
+
+			if version != protocol.VersionDraft29 {
+				It("serves other QUIC connections", func() {
+					tlsConf := testdata.GetTLSConfig()
+					tlsConf.NextProtos = []string{"h3"}
+					ln, err := quic.ListenAddr("localhost:0", tlsConf, nil)
+					Expect(err).ToNot(HaveOccurred())
+					done := make(chan struct{})
+					go func() {
+						defer GinkgoRecover()
+						defer close(done)
+						conn, err := ln.Accept(context.Background())
+						Expect(err).ToNot(HaveOccurred())
+						Expect(server.ServeQUICConn(conn)).To(Succeed())
+					}()
+
+					resp, err := client.Get(fmt.Sprintf("https://localhost:%d/hello", ln.Addr().(*net.UDPAddr).Port))
+					Expect(err).ToNot(HaveOccurred())
+					Expect(resp.StatusCode).To(Equal(http.StatusOK))
+					client.Transport.(io.Closer).Close()
+					Eventually(done).Should(BeClosed())
+				})
+			}
 		})
 	}
 })

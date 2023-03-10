@@ -2,11 +2,12 @@ package ackhandler
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	list "github.com/lucas-clemente/quic-go/internal/utils/linkedlist"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	list "github.com/quic-go/quic-go/internal/utils/linkedlist"
 )
 
 type sentPacketHistory struct {
@@ -17,41 +18,53 @@ type sentPacketHistory struct {
 	highestSent           protocol.PacketNumber
 }
 
+var packetElementPool sync.Pool
+
+func init() {
+	packetElementPool = *list.NewPool[*Packet]()
+}
+
 func newSentPacketHistory(rttStats *utils.RTTStats) *sentPacketHistory {
 	return &sentPacketHistory{
 		rttStats:              rttStats,
-		outstandingPacketList: list.New[*Packet](),
-		etcPacketList:         list.New[*Packet](),
+		outstandingPacketList: list.NewWithPool[*Packet](&packetElementPool),
+		etcPacketList:         list.NewWithPool[*Packet](&packetElementPool),
 		packetMap:             make(map[protocol.PacketNumber]*list.Element[*Packet]),
 		highestSent:           protocol.InvalidPacketNumber,
 	}
 }
 
-func (h *sentPacketHistory) SentPacket(p *Packet, isAckEliciting bool) {
-	if p.PacketNumber <= h.highestSent {
+func (h *sentPacketHistory) SentNonAckElicitingPacket(pn protocol.PacketNumber, encLevel protocol.EncryptionLevel, t time.Time) {
+	h.registerSentPacket(pn, encLevel, t)
+}
+
+func (h *sentPacketHistory) SentAckElicitingPacket(p *Packet) {
+	h.registerSentPacket(p.PacketNumber, p.EncryptionLevel, p.SendTime)
+
+	var el *list.Element[*Packet]
+	if p.outstanding() {
+		el = h.outstandingPacketList.PushBack(p)
+	} else {
+		el = h.etcPacketList.PushBack(p)
+	}
+	h.packetMap[p.PacketNumber] = el
+}
+
+func (h *sentPacketHistory) registerSentPacket(pn protocol.PacketNumber, encLevel protocol.EncryptionLevel, t time.Time) {
+	if pn <= h.highestSent {
 		panic("non-sequential packet number use")
 	}
 	// Skipped packet numbers.
-	for pn := h.highestSent + 1; pn < p.PacketNumber; pn++ {
+	for p := h.highestSent + 1; p < pn; p++ {
 		el := h.etcPacketList.PushBack(&Packet{
-			PacketNumber:    pn,
-			EncryptionLevel: p.EncryptionLevel,
-			SendTime:        p.SendTime,
+			PacketNumber:    p,
+			EncryptionLevel: encLevel,
+			SendTime:        t,
 			skippedPacket:   true,
 		})
-		h.packetMap[pn] = el
+		h.packetMap[p] = el
 	}
-	h.highestSent = p.PacketNumber
-
-	if isAckEliciting {
-		var el *list.Element[*Packet]
-		if p.outstanding() {
-			el = h.outstandingPacketList.PushBack(p)
-		} else {
-			el = h.etcPacketList.PushBack(p)
-		}
-		h.packetMap[p.PacketNumber] = el
-	}
+	h.highestSent = pn
 }
 
 // Iterate iterates through all packets.
@@ -102,8 +115,7 @@ func (h *sentPacketHistory) Remove(p protocol.PacketNumber) error {
 	if !ok {
 		return fmt.Errorf("packet %d not found in sent packet history", p)
 	}
-	h.outstandingPacketList.Remove(el)
-	h.etcPacketList.Remove(el)
+	el.List().Remove(el)
 	delete(h.packetMap, p)
 	return nil
 }
@@ -133,10 +145,7 @@ func (h *sentPacketHistory) DeclareLost(p *Packet) *Packet {
 	if !ok {
 		return nil
 	}
-	// try to remove it from both lists, as we don't know which one it currently belongs to.
-	// Remove is a no-op for elements that are not in the list.
-	h.outstandingPacketList.Remove(el)
-	h.etcPacketList.Remove(el)
+	el.List().Remove(el)
 	p.declaredLost = true
 	// move it to the correct position in the etc list (based on the packet number)
 	for el = h.etcPacketList.Back(); el != nil; el = el.Prev() {

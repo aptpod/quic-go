@@ -8,14 +8,14 @@ import (
 	"os"
 	"time"
 
-	mocklogging "github.com/lucas-clemente/quic-go/internal/mocks/logging"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/logging"
+	mocklogging "github.com/quic-go/quic-go/internal/mocks/logging"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/logging"
 
 	"github.com/golang/mock/gomock"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -449,6 +449,7 @@ var _ = Describe("Client", func() {
 
 		Context("quic.Config", func() {
 			It("setups with the right values", func() {
+				srk := &StatelessResetKey{'f', 'o', 'o', 'b', 'a', 'r'}
 				tokenStore := NewLRUTokenStore(10, 4)
 				config := &Config{
 					HandshakeIdleTimeout:  1337 * time.Minute,
@@ -456,7 +457,7 @@ var _ = Describe("Client", func() {
 					MaxIncomingStreams:    1234,
 					MaxIncomingUniStreams: 4321,
 					ConnectionIDLength:    13,
-					StatelessResetKey:     []byte("foobar"),
+					StatelessResetKey:     srk,
 					TokenStore:            tokenStore,
 					EnableDatagrams:       true,
 				}
@@ -466,7 +467,7 @@ var _ = Describe("Client", func() {
 				Expect(c.MaxIncomingStreams).To(BeEquivalentTo(1234))
 				Expect(c.MaxIncomingUniStreams).To(BeEquivalentTo(4321))
 				Expect(c.ConnectionIDLength).To(Equal(13))
-				Expect(c.StatelessResetKey).To(Equal([]byte("foobar")))
+				Expect(c.StatelessResetKey).To(Equal(srk))
 				Expect(c.TokenStore).To(Equal(tokenStore))
 				Expect(c.EnableDatagrams).To(BeTrue())
 			})

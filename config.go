@@ -5,8 +5,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
 )
 
 // Clone clones a Config
@@ -135,6 +135,7 @@ func populateConfig(config *Config, defaultConnIDLen int) *Config {
 		EnableDatagrams:                  config.EnableDatagrams,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		DisableVersionNegotiationPackets: config.DisableVersionNegotiationPackets,
+		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,
 	}
 }

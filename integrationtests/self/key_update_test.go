@@ -6,26 +6,23 @@ import (
 	"io"
 	"net"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/internal/handshake"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/internal/handshake"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/logging"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var (
-	sentHeaders     []*logging.ExtendedHeader
-	receivedHeaders []*logging.ExtendedHeader
+	sentHeaders     []*logging.ShortHeader
+	receivedHeaders []*logging.ShortHeader
 )
 
 func countKeyPhases() (sent, received int) {
 	lastKeyPhase := protocol.KeyPhaseOne
 	for _, hdr := range sentHeaders {
-		if hdr.IsLongHeader {
-			continue
-		}
 		if hdr.KeyPhase != lastKeyPhase {
 			sent++
 			lastKeyPhase = hdr.KeyPhase
@@ -33,9 +30,6 @@ func countKeyPhases() (sent, received int) {
 	}
 	lastKeyPhase = protocol.KeyPhaseOne
 	for _, hdr := range receivedHeaders {
-		if hdr.IsLongHeader {
-			continue
-		}
 		if hdr.KeyPhase != lastKeyPhase {
 			received++
 			lastKeyPhase = hdr.KeyPhase
@@ -48,11 +42,11 @@ type keyUpdateConnTracer struct {
 	logging.NullConnectionTracer
 }
 
-func (t *keyUpdateConnTracer) SentPacket(hdr *logging.ExtendedHeader, size logging.ByteCount, ack *logging.AckFrame, frames []logging.Frame) {
+func (t *keyUpdateConnTracer) SentShortHeaderPacket(hdr *logging.ShortHeader, _ logging.ByteCount, _ *logging.AckFrame, _ []logging.Frame) {
 	sentHeaders = append(sentHeaders, hdr)
 }
 
-func (t *keyUpdateConnTracer) ReceivedPacket(hdr *logging.ExtendedHeader, size logging.ByteCount, frames []logging.Frame) {
+func (t *keyUpdateConnTracer) ReceivedShortHeaderPacket(hdr *logging.ShortHeader, size logging.ByteCount, frames []logging.Frame) {
 	receivedHeaders = append(receivedHeaders, hdr)
 }
 

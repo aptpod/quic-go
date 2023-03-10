@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lucas-clemente/quic-go/internal/qtls"
+	"github.com/quic-go/quic-go/internal/qtls"
 
 	"github.com/golang/mock/gomock"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 

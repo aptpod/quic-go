@@ -9,12 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go"
+	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/logging"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -124,12 +124,11 @@ var _ = Describe("Timeout tests", func() {
 			Expect(err).ToNot(HaveOccurred())
 		}()
 
-		drop := utils.AtomicBool{}
-
+		var drop atomic.Bool
 		proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 			RemoteAddr: fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
 			DropPacket: func(quicproxy.Direction, []byte) bool {
-				return drop.Get()
+				return drop.Load()
 			},
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -148,7 +147,7 @@ var _ = Describe("Timeout tests", func() {
 		_, err = strIn.Read(make([]byte, 6))
 		Expect(err).ToNot(HaveOccurred())
 
-		drop.Set(true)
+		drop.Store(true)
 		time.Sleep(2 * idleTimeout)
 		_, err = strIn.Write([]byte("test"))
 		checkTimeoutError(err)
@@ -213,7 +212,7 @@ var _ = Describe("Timeout tests", func() {
 			}()
 			Eventually(done, 2*idleTimeout).Should(BeClosed())
 			var lastAckElicitingPacketSentAt time.Time
-			for _, p := range tr.getSentPackets() {
+			for _, p := range tr.getSentShortHeaderPackets() {
 				var hasAckElicitingFrame bool
 				for _, f := range p.frames {
 					if _, ok := f.(*logging.AckFrame); ok {
@@ -226,7 +225,7 @@ var _ = Describe("Timeout tests", func() {
 					lastAckElicitingPacketSentAt = p.time
 				}
 			}
-			rcvdPackets := tr.getRcvdPackets()
+			rcvdPackets := tr.getRcvdShortHeaderPackets()
 			lastPacketRcvdAt := rcvdPackets[len(rcvdPackets)-1].time
 			// We're ignoring here that only the first ack-eliciting packet sent resets the idle timeout.
 			// This is ok since we're dealing with a lossless connection here,
@@ -251,12 +250,12 @@ var _ = Describe("Timeout tests", func() {
 			Expect(err).ToNot(HaveOccurred())
 			defer server.Close()
 
-			drop := utils.AtomicBool{}
+			var drop atomic.Bool
 			proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 				RemoteAddr: fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
 				DropPacket: func(dir quicproxy.Direction, _ []byte) bool {
 					if dir == quicproxy.DirectionOutgoing {
-						return drop.Get()
+						return drop.Load()
 					}
 					return false
 				},
@@ -282,7 +281,7 @@ var _ = Describe("Timeout tests", func() {
 
 			// wait half the idle timeout, then send a packet
 			time.Sleep(idleTimeout / 2)
-			drop.Set(true)
+			drop.Store(true)
 			str, err := conn.OpenUniStream()
 			Expect(err).ToNot(HaveOccurred())
 			_, err = str.Write([]byte("foobar"))
@@ -331,11 +330,11 @@ var _ = Describe("Timeout tests", func() {
 			close(serverConnClosed)
 		}()
 
-		drop := utils.AtomicBool{}
+		var drop atomic.Bool
 		proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 			RemoteAddr: fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
 			DropPacket: func(quicproxy.Direction, []byte) bool {
-				return drop.Get()
+				return drop.Load()
 			},
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -361,7 +360,7 @@ var _ = Describe("Timeout tests", func() {
 		Consistently(serverConnClosed).ShouldNot(BeClosed())
 
 		// idle timeout will still kick in if pings are dropped
-		drop.Set(true)
+		drop.Store(true)
 		time.Sleep(2 * idleTimeout)
 		_, err = str.Write([]byte("foobar"))
 		checkTimeoutError(err)

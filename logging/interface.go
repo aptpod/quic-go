@@ -7,11 +7,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/utils"
-
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
-	"github.com/lucas-clemente/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/internal/wire"
 )
 
 type (
@@ -44,7 +43,7 @@ type (
 
 	// The Header is the QUIC packet header, before removing header protection.
 	Header = wire.Header
-	// The ExtendedHeader is the QUIC packet header, after removing header protection.
+	// The ExtendedHeader is the QUIC Long Header packet header, after removing header protection.
 	ExtendedHeader = wire.ExtendedHeader
 	// The TransportParameters are QUIC transport parameters.
 	TransportParameters = wire.TransportParameters
@@ -92,6 +91,14 @@ const (
 	StreamTypeBidi = protocol.StreamTypeBidi
 )
 
+// The ShortHeader is the QUIC Short Header packet header, after removing header protection.
+type ShortHeader struct {
+	DestConnectionID ConnectionID
+	PacketNumber     PacketNumber
+	PacketNumberLen  protocol.PacketNumberLen
+	KeyPhase         KeyPhaseBit
+}
+
 // A Tracer traces events.
 type Tracer interface {
 	// TracerForConnection requests a new tracer for a connection.
@@ -113,11 +120,13 @@ type ConnectionTracer interface {
 	SentTransportParameters(*TransportParameters)
 	ReceivedTransportParameters(*TransportParameters)
 	RestoredTransportParameters(parameters *TransportParameters) // for 0-RTT
-	SentPacket(hdr *ExtendedHeader, size ByteCount, ack *AckFrame, frames []Frame)
+	SentLongHeaderPacket(hdr *ExtendedHeader, size ByteCount, ack *AckFrame, frames []Frame)
+	SentShortHeaderPacket(hdr *ShortHeader, size ByteCount, ack *AckFrame, frames []Frame)
 	ReceivedVersionNegotiationPacket(dest, src ArbitraryLenConnectionID, _ []VersionNumber)
 	ReceivedRetry(*Header)
-	ReceivedPacket(hdr *ExtendedHeader, size ByteCount, frames []Frame)
-	BufferedPacket(PacketType)
+	ReceivedLongHeaderPacket(hdr *ExtendedHeader, size ByteCount, frames []Frame)
+	ReceivedShortHeaderPacket(hdr *ShortHeader, size ByteCount, frames []Frame)
+	BufferedPacket(PacketType, ByteCount)
 	DroppedPacket(PacketType, ByteCount, PacketDropReason)
 	UpdatedMetrics(rttStats *RTTStats, cwnd, bytesInFlight ByteCount, packetsInFlight int)
 	AcknowledgedPacket(EncryptionLevel, PacketNumber)

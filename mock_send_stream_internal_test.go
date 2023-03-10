@@ -10,9 +10,9 @@ import (
 	time "time"
 
 	gomock "github.com/golang/mock/gomock"
-	ackhandler "github.com/lucas-clemente/quic-go/internal/ackhandler"
-	protocol "github.com/lucas-clemente/quic-go/internal/protocol"
-	wire "github.com/lucas-clemente/quic-go/internal/wire"
+	ackhandler "github.com/quic-go/quic-go/internal/ackhandler"
+	protocol "github.com/quic-go/quic-go/internal/protocol"
+	wire "github.com/quic-go/quic-go/internal/wire"
 )
 
 // MockSendStreamI is a mock of SendStreamI interface.
@@ -160,18 +160,18 @@ func (mr *MockSendStreamIMockRecorder) hasData() *gomock.Call {
 }
 
 // popStreamFrame mocks base method.
-func (m *MockSendStreamI) popStreamFrame(maxBytes protocol.ByteCount) (*ackhandler.Frame, bool) {
+func (m *MockSendStreamI) popStreamFrame(maxBytes protocol.ByteCount, v protocol.VersionNumber) (*ackhandler.Frame, bool) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "popStreamFrame", maxBytes)
+	ret := m.ctrl.Call(m, "popStreamFrame", maxBytes, v)
 	ret0, _ := ret[0].(*ackhandler.Frame)
 	ret1, _ := ret[1].(bool)
 	return ret0, ret1
 }
 
 // popStreamFrame indicates an expected call of popStreamFrame.
-func (mr *MockSendStreamIMockRecorder) popStreamFrame(maxBytes interface{}) *gomock.Call {
+func (mr *MockSendStreamIMockRecorder) popStreamFrame(maxBytes, v interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "popStreamFrame", reflect.TypeOf((*MockSendStreamI)(nil).popStreamFrame), maxBytes)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "popStreamFrame", reflect.TypeOf((*MockSendStreamI)(nil).popStreamFrame), maxBytes, v)
 }
 
 // updateSendWindow mocks base method.

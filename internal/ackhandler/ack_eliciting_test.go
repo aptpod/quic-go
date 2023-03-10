@@ -3,8 +3,9 @@ package ackhandler
 import (
 	"reflect"
 
-	"github.com/lucas-clemente/quic-go/internal/wire"
-	. "github.com/onsi/ginkgo"
+	"github.com/quic-go/quic-go/internal/wire"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -28,7 +29,7 @@ var _ = Describe("ack-eliciting frames", func() {
 		})
 
 		It("HasAckElicitingFrames works for "+fName, func() {
-			Expect(HasAckElicitingFrames([]Frame{{Frame: f}})).To(Equal(e))
+			Expect(HasAckElicitingFrames([]*Frame{{Frame: f}})).To(Equal(e))
 		})
 	}
 })

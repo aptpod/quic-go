@@ -104,9 +104,15 @@ func (m *connTracerMultiplexer) RestoredTransportParameters(tp *TransportParamet
 	}
 }
 
-func (m *connTracerMultiplexer) SentPacket(hdr *ExtendedHeader, size ByteCount, ack *AckFrame, frames []Frame) {
+func (m *connTracerMultiplexer) SentLongHeaderPacket(hdr *ExtendedHeader, size ByteCount, ack *AckFrame, frames []Frame) {
 	for _, t := range m.tracers {
-		t.SentPacket(hdr, size, ack, frames)
+		t.SentLongHeaderPacket(hdr, size, ack, frames)
+	}
+}
+
+func (m *connTracerMultiplexer) SentShortHeaderPacket(hdr *ShortHeader, size ByteCount, ack *AckFrame, frames []Frame) {
+	for _, t := range m.tracers {
+		t.SentShortHeaderPacket(hdr, size, ack, frames)
 	}
 }
 
@@ -122,15 +128,21 @@ func (m *connTracerMultiplexer) ReceivedRetry(hdr *Header) {
 	}
 }
 
-func (m *connTracerMultiplexer) ReceivedPacket(hdr *ExtendedHeader, size ByteCount, frames []Frame) {
+func (m *connTracerMultiplexer) ReceivedLongHeaderPacket(hdr *ExtendedHeader, size ByteCount, frames []Frame) {
 	for _, t := range m.tracers {
-		t.ReceivedPacket(hdr, size, frames)
+		t.ReceivedLongHeaderPacket(hdr, size, frames)
 	}
 }
 
-func (m *connTracerMultiplexer) BufferedPacket(typ PacketType) {
+func (m *connTracerMultiplexer) ReceivedShortHeaderPacket(hdr *ShortHeader, size ByteCount, frames []Frame) {
 	for _, t := range m.tracers {
-		t.BufferedPacket(typ)
+		t.ReceivedShortHeaderPacket(hdr, size, frames)
+	}
+}
+
+func (m *connTracerMultiplexer) BufferedPacket(typ PacketType, size ByteCount) {
+	for _, t := range m.tracers {
+		t.BufferedPacket(typ, size)
 	}
 }
 

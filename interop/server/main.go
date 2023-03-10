@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/http3"
-	"github.com/lucas-clemente/quic-go/interop/http09"
-	"github.com/lucas-clemente/quic-go/interop/utils"
-	"github.com/lucas-clemente/quic-go/qlog"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/interop/http09"
+	"github.com/quic-go/quic-go/interop/utils"
+	"github.com/quic-go/quic-go/qlog"
 )
 
 var tlsConf *tls.Config
@@ -58,7 +58,10 @@ func main() {
 	}
 
 	switch testcase {
-	case "versionnegotiation", "handshake", "retry", "transfer", "resumption", "zerortt", "multiconnect":
+	case "zerortt":
+		quicConf.Allow0RTT = func(net.Addr) bool { return true }
+		fallthrough
+	case "versionnegotiation", "handshake", "retry", "transfer", "resumption", "multiconnect":
 		err = runHTTP09Server(quicConf)
 	case "chacha20":
 		tlsConf.CipherSuites = []uint16{tls.TLS_CHACHA20_POLY1305_SHA256}

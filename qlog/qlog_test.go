@@ -11,13 +11,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/logging"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -420,11 +420,10 @@ var _ = Describe("Tracing", func() {
 				Expect(ev).To(HaveKeyWithValue("initial_max_stream_data_uni", float64(300)))
 			})
 
-			It("records a sent packet, without an ACK", func() {
-				tracer.SentPacket(
+			It("records a sent long header packet, without an ACK", func() {
+				tracer.SentLongHeaderPacket(
 					&logging.ExtendedHeader{
 						Header: logging.Header{
-							IsLongHeader:     true,
 							Type:             protocol.PacketTypeHandshake,
 							DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
 							SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
@@ -460,11 +459,11 @@ var _ = Describe("Tracing", func() {
 				Expect(frames[1].(map[string]interface{})).To(HaveKeyWithValue("frame_type", "stream"))
 			})
 
-			It("records a sent packet, without an ACK", func() {
-				tracer.SentPacket(
-					&logging.ExtendedHeader{
-						Header:       logging.Header{DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4})},
-						PacketNumber: 1337,
+			It("records a sent short header packet, without an ACK", func() {
+				tracer.SentShortHeaderPacket(
+					&logging.ShortHeader{
+						DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+						PacketNumber:     1337,
 					},
 					123,
 					&logging.AckFrame{AckRanges: []logging.AckRange{{Smallest: 1, Largest: 10}}},
@@ -486,11 +485,10 @@ var _ = Describe("Tracing", func() {
 				Expect(frames[1].(map[string]interface{})).To(HaveKeyWithValue("frame_type", "max_data"))
 			})
 
-			It("records a received packet", func() {
-				tracer.ReceivedPacket(
+			It("records a received Long Header packet", func() {
+				tracer.ReceivedLongHeaderPacket(
 					&logging.ExtendedHeader{
 						Header: logging.Header{
-							IsLongHeader:     true,
 							Type:             protocol.PacketTypeInitial,
 							DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
 							SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
@@ -526,10 +524,41 @@ var _ = Describe("Tracing", func() {
 				Expect(ev["frames"].([]interface{})).To(HaveLen(2))
 			})
 
+			It("records a received Short Header packet", func() {
+				shdr := &logging.ShortHeader{
+					DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
+					PacketNumber:     1337,
+					PacketNumberLen:  protocol.PacketNumberLen3,
+					KeyPhase:         protocol.KeyPhaseZero,
+				}
+				tracer.ReceivedShortHeaderPacket(
+					shdr,
+					789,
+					[]logging.Frame{
+						&logging.MaxStreamDataFrame{StreamID: 42, MaximumStreamData: 987},
+						&logging.StreamFrame{StreamID: 123, Offset: 1234, Length: 6, Fin: true},
+					},
+				)
+				entry := exportAndParseSingle()
+				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
+				Expect(entry.Name).To(Equal("transport:packet_received"))
+				ev := entry.Event
+				Expect(ev).To(HaveKey("raw"))
+				raw := ev["raw"].(map[string]interface{})
+				Expect(raw).To(HaveKeyWithValue("length", float64(789)))
+				Expect(raw).To(HaveKeyWithValue("payload_length", float64(789-(1+8+3))))
+				Expect(ev).To(HaveKey("header"))
+				hdr := ev["header"].(map[string]interface{})
+				Expect(hdr).To(HaveKeyWithValue("packet_type", "1RTT"))
+				Expect(hdr).To(HaveKeyWithValue("packet_number", float64(1337)))
+				Expect(hdr).To(HaveKeyWithValue("key_phase_bit", "0"))
+				Expect(ev).To(HaveKey("frames"))
+				Expect(ev["frames"].([]interface{})).To(HaveLen(2))
+			})
+
 			It("records a received Retry packet", func() {
 				tracer.ReceivedRetry(
 					&logging.Header{
-						IsLongHeader:     true,
 						Type:             protocol.PacketTypeRetry,
 						DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
 						SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
@@ -578,7 +607,7 @@ var _ = Describe("Tracing", func() {
 			})
 
 			It("records buffered packets", func() {
-				tracer.BufferedPacket(logging.PacketTypeHandshake)
+				tracer.BufferedPacket(logging.PacketTypeHandshake, 1337)
 				entry := exportAndParseSingle()
 				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
 				Expect(entry.Name).To(Equal("transport:packet_buffered"))
@@ -587,6 +616,8 @@ var _ = Describe("Tracing", func() {
 				hdr := ev["header"].(map[string]interface{})
 				Expect(hdr).To(HaveLen(1))
 				Expect(hdr).To(HaveKeyWithValue("packet_type", "handshake"))
+				Expect(ev).To(HaveKey("raw"))
+				Expect(ev["raw"].(map[string]interface{})).To(HaveKeyWithValue("length", float64(1337)))
 				Expect(ev).To(HaveKeyWithValue("trigger", "keys_unavailable"))
 			})
 
@@ -762,7 +793,7 @@ var _ = Describe("Tracing", func() {
 				var keyTypes []string
 				for _, entry := range entries {
 					Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
-					Expect(entry.Name).To(Equal("security:key_retired"))
+					Expect(entry.Name).To(Equal("security:key_discarded"))
 					ev := entry.Event
 					Expect(ev).To(HaveKeyWithValue("trigger", "tls"))
 					Expect(ev).To(HaveKey("key_type"))
@@ -778,7 +809,7 @@ var _ = Describe("Tracing", func() {
 				Expect(entries).To(HaveLen(1))
 				entry := entries[0]
 				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
-				Expect(entry.Name).To(Equal("security:key_retired"))
+				Expect(entry.Name).To(Equal("security:key_discarded"))
 				ev := entry.Event
 				Expect(ev).To(HaveKeyWithValue("trigger", "tls"))
 				Expect(ev).To(HaveKeyWithValue("key_type", "server_0rtt_secret"))
@@ -791,7 +822,7 @@ var _ = Describe("Tracing", func() {
 				var keyTypes []string
 				for _, entry := range entries {
 					Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
-					Expect(entry.Name).To(Equal("security:key_retired"))
+					Expect(entry.Name).To(Equal("security:key_discarded"))
 					ev := entry.Event
 					Expect(ev).To(HaveKeyWithValue("generation", float64(42)))
 					Expect(ev).ToNot(HaveKey("trigger"))

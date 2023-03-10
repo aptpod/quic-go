@@ -1,17 +1,16 @@
 package quic
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"math/rand"
 	"time"
 
-	"github.com/golang/mock/gomock"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/wire"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/wire"
 
-	. "github.com/onsi/ginkgo"
+	"github.com/golang/mock/gomock"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -43,9 +42,9 @@ var _ = Describe("Streams Map (incoming)", func() {
 
 	// check that the frame can be serialized and deserialized
 	checkFrameSerialization := func(f wire.Frame) {
-		b, err := f.Append(nil, protocol.VersionTLS)
+		b, err := f.Append(nil, protocol.Version1)
 		ExpectWithOffset(1, err).ToNot(HaveOccurred())
-		frame, err := wire.NewFrameParser(false, protocol.VersionTLS).ParseNext(bytes.NewReader(b), protocol.Encryption1RTT)
+		_, frame, err := wire.NewFrameParser(false).ParseNext(b, protocol.Encryption1RTT, protocol.Version1)
 		ExpectWithOffset(1, err).ToNot(HaveOccurred())
 		Expect(f).To(Equal(frame))
 	}

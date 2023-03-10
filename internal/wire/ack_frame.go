@@ -6,9 +6,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/quicvarint"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/quicvarint"
 )
 
 var errInvalidAckRanges = errors.New("AckFrame: ACK frame contains invalid ACK ranges")
@@ -29,7 +29,7 @@ func parseAckFrame(r *bytes.Reader, ackDelayExponent uint8, _ protocol.VersionNu
 	}
 	ecn := typeByte&0x1 > 0
 
-	frame := &AckFrame{}
+	frame := GetAckFrame()
 
 	la, err := quicvarint.Read(r)
 	if err != nil {
@@ -106,7 +106,7 @@ func parseAckFrame(r *bytes.Reader, ackDelayExponent uint8, _ protocol.VersionNu
 	return frame, nil
 }
 
-// Write writes an ACK frame.
+// Append appends an ACK frame.
 func (f *AckFrame) Append(b []byte, _ protocol.VersionNumber) ([]byte, error) {
 	hasECN := f.ECT0 > 0 || f.ECT1 > 0 || f.ECNCE > 0
 	if hasECN {

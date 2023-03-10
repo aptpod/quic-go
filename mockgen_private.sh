@@ -17,7 +17,7 @@ for f in *.go; do
     continue;
   fi
   if $(egrep -qe "type (.*) interface" $f); then
-    AUX+=("github.com/lucas-clemente/quic-go=$f")
+    AUX+=("github.com/quic-go/quic-go=$f")
   fi
 done
 
@@ -44,6 +44,6 @@ AUX_FILES=$(IFS=, ; echo "${AUX[*]}")
 ## create a public alias for the interface, so that mockgen can process it
 echo -e "package $1\n" > $TMPFILE
 echo "$INTERFACE" | sed "s/$ORIG_INTERFACE_NAME/$INTERFACE_NAME/" >> $TMPFILE
-mockgen -package $1 -self_package $3 -destination $DEST -source=$TMPFILE -aux_files $AUX_FILES
+go run github.com/golang/mock/mockgen -package $1 -self_package $3 -destination $DEST -source=$TMPFILE -aux_files $AUX_FILES
 sed "s/$TMPFILE/$SRC/" "$DEST" > "$DEST.new" && mv "$DEST.new" "$DEST"
 rm "$TMPFILE"

@@ -5,13 +5,13 @@ import (
 	"io"
 	"net/http"
 
-	mockquic "github.com/lucas-clemente/quic-go/internal/mocks/quic"
-	"github.com/lucas-clemente/quic-go/internal/utils"
+	mockquic "github.com/quic-go/quic-go/internal/mocks/quic"
+	"github.com/quic-go/quic-go/internal/utils"
 
 	"github.com/golang/mock/gomock"
-	"github.com/marten-seemann/qpack"
+	"github.com/quic-go/qpack"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -110,8 +110,8 @@ var _ = Describe("Response Writer", func() {
 	})
 
 	It("does not WriteHeader() twice", func() {
-		rw.WriteHeader(200)
-		rw.WriteHeader(500)
+		rw.WriteHeader(http.StatusOK)
+		rw.WriteHeader(http.StatusInternalServerError)
 		fields := decodeHeader(strBuf)
 		Expect(fields).To(HaveLen(1))
 		Expect(fields).To(HaveKeyWithValue(":status", []string{"200"}))
@@ -146,5 +146,14 @@ var _ = Describe("Response Writer", func() {
 		n, err := rw.Write([]byte("foobar"))
 		Expect(n).To(BeZero())
 		Expect(err).To(MatchError(http.ErrBodyNotAllowed))
+	})
+
+	It("first call to Write sniffs if Content-Type is not set", func() {
+		n, err := rw.Write([]byte("<html></html>"))
+		Expect(n).To(Equal(13))
+		Expect(err).ToNot(HaveOccurred())
+
+		fields := decodeHeader(strBuf)
+		Expect(fields).To(HaveKeyWithValue("content-type", []string{"text/html; charset=utf-8"}))
 	})
 })
