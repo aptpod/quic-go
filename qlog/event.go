@@ -148,8 +148,7 @@ func (e eventConnectionClosed) MarshalJSONObject(enc *gojay.Encoder) {
 		enc.StringKey("connection_code", transportError(transportErr.ErrorCode).String())
 		enc.StringKey("reason", transportErr.ErrorMessage)
 	case errors.As(e.e, &versionNegotiationErr):
-		enc.StringKey("owner", ownerRemote.String())
-		enc.StringKey("trigger", "version_negotiation")
+		enc.StringKey("trigger", "version_mismatch")
 	}
 }
 
@@ -159,6 +158,7 @@ type eventPacketSent struct {
 	PayloadLength logging.ByteCount
 	Frames        frames
 	IsCoalesced   bool
+	ECN           logging.ECN
 	Trigger       string
 }
 
@@ -173,6 +173,9 @@ func (e eventPacketSent) MarshalJSONObject(enc *gojay.Encoder) {
 	enc.ObjectKey("raw", rawInfo{Length: e.Length, PayloadLength: e.PayloadLength})
 	enc.ArrayKeyOmitEmpty("frames", e.Frames)
 	enc.BoolKeyOmitEmpty("is_coalesced", e.IsCoalesced)
+	if e.ECN != logging.ECNUnsupported {
+		enc.StringKey("ecn", ecn(e.ECN).String())
+	}
 	enc.StringKeyOmitEmpty("trigger", e.Trigger)
 }
 
@@ -181,6 +184,7 @@ type eventPacketReceived struct {
 	Length        logging.ByteCount
 	PayloadLength logging.ByteCount
 	Frames        frames
+	ECN           logging.ECN
 	IsCoalesced   bool
 	Trigger       string
 }
@@ -196,6 +200,9 @@ func (e eventPacketReceived) MarshalJSONObject(enc *gojay.Encoder) {
 	enc.ObjectKey("raw", rawInfo{Length: e.Length, PayloadLength: e.PayloadLength})
 	enc.ArrayKeyOmitEmpty("frames", e.Frames)
 	enc.BoolKeyOmitEmpty("is_coalesced", e.IsCoalesced)
+	if e.ECN != logging.ECNUnsupported {
+		enc.StringKey("ecn", ecn(e.ECN).String())
+	}
 	enc.StringKeyOmitEmpty("trigger", e.Trigger)
 }
 
@@ -515,6 +522,20 @@ func (e eventCongestionStateUpdated) IsNil() bool        { return false }
 
 func (e eventCongestionStateUpdated) MarshalJSONObject(enc *gojay.Encoder) {
 	enc.StringKey("new", e.state.String())
+}
+
+type eventECNStateUpdated struct {
+	state   logging.ECNState
+	trigger logging.ECNStateTrigger
+}
+
+func (e eventECNStateUpdated) Category() category { return categoryRecovery }
+func (e eventECNStateUpdated) Name() string       { return "ecn_state_updated" }
+func (e eventECNStateUpdated) IsNil() bool        { return false }
+
+func (e eventECNStateUpdated) MarshalJSONObject(enc *gojay.Encoder) {
+	enc.StringKey("new", ecnState(e.state).String())
+	enc.StringKeyOmitEmpty("trigger", ecnStateTrigger(e.trigger).String())
 }
 
 type eventGeneric struct {

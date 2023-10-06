@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ var _ = Describe("QUIC Proxy", func() {
 		hdr := wire.ExtendedHeader{
 			Header: wire.Header{
 				Type:             protocol.PacketTypeInitial,
-				Version:          protocol.VersionTLS,
+				Version:          protocol.Version1,
 				Length:           4 + protocol.ByteCount(len(payload)),
 				DestConnectionID: protocol.ParseConnectionID([]byte{0xde, 0xad, 0xbe, 0xef, 0, 0, 0x13, 0x37}),
 				SrcConnectionID:  protocol.ParseConnectionID([]byte{0xde, 0xad, 0xbe, 0xef, 0, 0, 0x13, 0x37}),
@@ -49,7 +50,7 @@ var _ = Describe("QUIC Proxy", func() {
 		hdr, data, _, err := wire.ParsePacket(b)
 		ExpectWithOffset(1, err).ToNot(HaveOccurred())
 		Expect(hdr.Type).To(Equal(protocol.PacketTypeInitial))
-		extHdr, err := hdr.ParseExtended(bytes.NewReader(data), protocol.VersionTLS)
+		extHdr, err := hdr.ParseExtended(bytes.NewReader(data), protocol.Version1)
 		ExpectWithOffset(1, err).ToNot(HaveOccurred())
 		return extHdr.PacketNumber
 	}
@@ -68,7 +69,11 @@ var _ = Describe("QUIC Proxy", func() {
 			addr, err := net.ResolveUDPAddr("udp", "localhost:"+strconv.Itoa(proxy.LocalPort()))
 			Expect(err).ToNot(HaveOccurred())
 			_, err = net.ListenUDP("udp", addr)
-			Expect(err).To(MatchError(fmt.Sprintf("listen udp 127.0.0.1:%d: bind: address already in use", proxy.LocalPort())))
+			if runtime.GOOS == "windows" {
+				Expect(err).To(MatchError(fmt.Sprintf("listen udp 127.0.0.1:%d: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.", proxy.LocalPort())))
+			} else {
+				Expect(err).To(MatchError(fmt.Sprintf("listen udp 127.0.0.1:%d: bind: address already in use", proxy.LocalPort())))
+			}
 			Expect(proxy.Close()).To(Succeed()) // stopping is tested in the next test
 		})
 

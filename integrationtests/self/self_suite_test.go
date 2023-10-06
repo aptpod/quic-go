@@ -1,21 +1,13 @@
 package self_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"math/big"
-	mrand "math/rand"
 	"os"
 	"runtime/pprof"
 	"strconv"
@@ -24,19 +16,18 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
-
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/integrationtests/tools"
+	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 	"github.com/quic-go/quic-go/logging"
-	"github.com/quic-go/quic-go/qlog"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-const alpn = "quic-go integration tests"
+const alpn = tools.ALPN
 
 const (
 	dataLen     = 500 * 1024       // 500 KB
@@ -90,32 +81,33 @@ func (b *syncedBuffer) Reset() {
 }
 
 var (
-	logFileName string // the log file set in the ginkgo flags
-	logBufOnce  sync.Once
-	logBuf      *syncedBuffer
-	enableQlog  bool
+	logFileName  string // the log file set in the ginkgo flags
+	logBufOnce   sync.Once
+	logBuf       *syncedBuffer
+	versionParam string
 
-	tlsConfig          *tls.Config
-	tlsConfigLongChain *tls.Config
-	tlsClientConfig    *tls.Config
-	quicConfigTracer   logging.Tracer
+	qlogTracer func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer
+	enableQlog bool
+
+	version                          quic.VersionNumber
+	tlsConfig                        *tls.Config
+	tlsConfigLongChain               *tls.Config
+	tlsClientConfig                  *tls.Config
+	tlsClientConfigWithoutServerName *tls.Config
 )
 
 // read the logfile command line flag
 // to set call ginkgo -- -logfile=log.txt
 func init() {
 	flag.StringVar(&logFileName, "logfile", "", "log file")
+	flag.StringVar(&versionParam, "version", "1", "QUIC version")
 	flag.BoolVar(&enableQlog, "qlog", false, "enable qlog")
-}
 
-var _ = BeforeSuite(func() {
-	mrand.Seed(GinkgoRandomSeed())
-
-	ca, caPrivateKey, err := generateCA()
+	ca, caPrivateKey, err := tools.GenerateCA()
 	if err != nil {
 		panic(err)
 	}
-	leafCert, leafPrivateKey, err := generateLeafCert(ca, caPrivateKey)
+	leafCert, leafPrivateKey, err := tools.GenerateLeafCert(ca, caPrivateKey)
 	if err != nil {
 		panic(err)
 	}
@@ -126,7 +118,7 @@ var _ = BeforeSuite(func() {
 		}},
 		NextProtos: []string{alpn},
 	}
-	tlsConfLongChain, err := generateTLSConfigWithLongCertChain(ca, caPrivateKey)
+	tlsConfLongChain, err := tools.GenerateTLSConfigWithLongCertChain(ca, caPrivateKey)
 	if err != nil {
 		panic(err)
 	}
@@ -135,130 +127,31 @@ var _ = BeforeSuite(func() {
 	root := x509.NewCertPool()
 	root.AddCert(ca)
 	tlsClientConfig = &tls.Config{
+		ServerName: "localhost",
 		RootCAs:    root,
 		NextProtos: []string{alpn},
 	}
-
-	if enableQlog {
-		quicConfigTracer = qlog.NewTracer(func(p logging.Perspective, connectionID []byte) io.WriteCloser {
-			role := "server"
-			if p == logging.PerspectiveClient {
-				role = "client"
-			}
-			filename := fmt.Sprintf("log_%x_%s.qlog", connectionID, role)
-			fmt.Fprintf(GinkgoWriter, "Creating %s.\n", filename)
-			f, err := os.Create(filename)
-			Expect(err).ToNot(HaveOccurred())
-			bw := bufio.NewWriter(f)
-			return utils.NewBufferedWriteCloser(bw, f)
-		})
-	}
-})
-
-func generateCA() (*x509.Certificate, crypto.PrivateKey, error) {
-	certTempl := &x509.Certificate{
-		SerialNumber:          big.NewInt(2019),
-		Subject:               pkix.Name{},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		IsCA:                  true,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	caBytes, err := x509.CreateCertificate(rand.Reader, certTempl, certTempl, pub, priv)
-	if err != nil {
-		return nil, nil, err
-	}
-	ca, err := x509.ParseCertificate(caBytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ca, priv, nil
-}
-
-func generateLeafCert(ca *x509.Certificate, caPriv crypto.PrivateKey) (*x509.Certificate, crypto.PrivateKey, error) {
-	certTempl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		DNSNames:     []string{"localhost"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	certBytes, err := x509.CreateCertificate(rand.Reader, certTempl, ca, pub, caPriv)
-	if err != nil {
-		return nil, nil, err
-	}
-	cert, err := x509.ParseCertificate(certBytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	return cert, priv, nil
-}
-
-// getTLSConfigWithLongCertChain generates a tls.Config that uses a long certificate chain.
-// The Root CA used is the same as for the config returned from getTLSConfig().
-func generateTLSConfigWithLongCertChain(ca *x509.Certificate, caPrivateKey crypto.PrivateKey) (*tls.Config, error) {
-	const chainLen = 7
-	certTempl := &x509.Certificate{
-		SerialNumber:          big.NewInt(2019),
-		Subject:               pkix.Name{},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		IsCA:                  true,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-	}
-
-	lastCA := ca
-	lastCAPrivKey := caPrivateKey
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
-	}
-	certs := make([]*x509.Certificate, chainLen)
-	for i := 0; i < chainLen; i++ {
-		caBytes, err := x509.CreateCertificate(rand.Reader, certTempl, lastCA, &privKey.PublicKey, lastCAPrivKey)
-		if err != nil {
-			return nil, err
-		}
-		ca, err := x509.ParseCertificate(caBytes)
-		if err != nil {
-			return nil, err
-		}
-		certs[i] = ca
-		lastCA = ca
-		lastCAPrivKey = privKey
-	}
-	leafCert, leafPrivateKey, err := generateLeafCert(lastCA, lastCAPrivKey)
-	if err != nil {
-		return nil, err
-	}
-
-	rawCerts := make([][]byte, chainLen+1)
-	for i, cert := range certs {
-		rawCerts[chainLen-i] = cert.Raw
-	}
-	rawCerts[0] = leafCert.Raw
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{{
-			Certificate: rawCerts,
-			PrivateKey:  leafPrivateKey,
-		}},
+	tlsClientConfigWithoutServerName = &tls.Config{
+		RootCAs:    root,
 		NextProtos: []string{alpn},
-	}, nil
+	}
 }
+
+var _ = BeforeSuite(func() {
+	if enableQlog {
+		qlogTracer = tools.NewQlogger(GinkgoWriter)
+	}
+	switch versionParam {
+	case "1":
+		version = quic.Version1
+	case "2":
+		version = quic.Version2
+	default:
+		Fail(fmt.Sprintf("unknown QUIC version: %s", versionParam))
+	}
+	fmt.Printf("Using QUIC version: %s\n", version)
+	protocol.SupportedVersions = []quic.VersionNumber{version}
+})
 
 func getTLSConfig() *tls.Config {
 	return tlsConfig.Clone()
@@ -272,16 +165,34 @@ func getTLSClientConfig() *tls.Config {
 	return tlsClientConfig.Clone()
 }
 
+func getTLSClientConfigWithoutServerName() *tls.Config {
+	return tlsClientConfigWithoutServerName.Clone()
+}
+
 func getQuicConfig(conf *quic.Config) *quic.Config {
 	if conf == nil {
 		conf = &quic.Config{}
 	} else {
 		conf = conf.Clone()
 	}
-	if conf.Tracer == nil {
-		conf.Tracer = quicConfigTracer
-	} else if quicConfigTracer != nil {
-		conf.Tracer = logging.NewMultiplexedTracer(quicConfigTracer, conf.Tracer)
+	if enableQlog {
+		if conf.Tracer == nil {
+			conf.Tracer = func(ctx context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
+				return logging.NewMultiplexedConnectionTracer(
+					qlogTracer(ctx, p, connID),
+					// multiplex it with an empty tracer to check that we're correctly ignoring unset callbacks everywhere
+					&logging.ConnectionTracer{},
+				)
+			}
+		} else if qlogTracer != nil {
+			origTracer := conf.Tracer
+			conf.Tracer = func(ctx context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
+				return logging.NewMultiplexedConnectionTracer(
+					qlogTracer(ctx, p, connID),
+					origTracer(ctx, p, connID),
+				)
+			}
+		}
 	}
 	return conf
 }
@@ -304,8 +215,16 @@ func areHandshakesRunning() bool {
 	return strings.Contains(b.String(), "RunHandshake")
 }
 
+func areTransportsRunning() bool {
+	var b bytes.Buffer
+	pprof.Lookup("goroutine").WriteTo(&b, 1)
+	return strings.Contains(b.String(), "quic-go.(*Transport).listen")
+}
+
 var _ = AfterEach(func() {
 	Expect(areHandshakesRunning()).To(BeFalse())
+	Eventually(areTransportsRunning).Should(BeFalse())
+
 	if debugLog() {
 		logFile, err := os.Create(logFileName)
 		Expect(err).ToNot(HaveOccurred())
@@ -329,19 +248,8 @@ func scaleDuration(d time.Duration) time.Duration {
 	return time.Duration(scaleFactor) * d
 }
 
-type tracer struct {
-	logging.NullTracer
-	createNewConnTracer func() logging.ConnectionTracer
-}
-
-var _ logging.Tracer = &tracer{}
-
-func newTracer(c func() logging.ConnectionTracer) logging.Tracer {
-	return &tracer{createNewConnTracer: c}
-}
-
-func (t *tracer) TracerForConnection(context.Context, logging.Perspective, logging.ConnectionID) logging.ConnectionTracer {
-	return t.createNewConnTracer()
+func newTracer(tracer *logging.ConnectionTracer) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
+	return func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer { return tracer }
 }
 
 type packet struct {
@@ -356,47 +264,44 @@ type shortHeaderPacket struct {
 	frames []logging.Frame
 }
 
-type packetTracer struct {
-	logging.NullConnectionTracer
+type packetCounter struct {
 	closed                     chan struct{}
 	sentShortHdr, rcvdShortHdr []shortHeaderPacket
 	rcvdLongHdr                []packet
 }
 
-func newPacketTracer() *packetTracer {
-	return &packetTracer{closed: make(chan struct{})}
-}
-
-func (t *packetTracer) ReceivedLongHeaderPacket(hdr *logging.ExtendedHeader, _ logging.ByteCount, frames []logging.Frame) {
-	t.rcvdLongHdr = append(t.rcvdLongHdr, packet{time: time.Now(), hdr: hdr, frames: frames})
-}
-
-func (t *packetTracer) ReceivedShortHeaderPacket(hdr *logging.ShortHeader, _ logging.ByteCount, frames []logging.Frame) {
-	t.rcvdShortHdr = append(t.rcvdShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
-}
-
-func (t *packetTracer) SentShortHeaderPacket(hdr *logging.ShortHeader, _ logging.ByteCount, ack *wire.AckFrame, frames []logging.Frame) {
-	if ack != nil {
-		frames = append(frames, ack)
-	}
-	t.sentShortHdr = append(t.sentShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
-}
-
-func (t *packetTracer) Close() { close(t.closed) }
-
-func (t *packetTracer) getSentShortHeaderPackets() []shortHeaderPacket {
+func (t *packetCounter) getSentShortHeaderPackets() []shortHeaderPacket {
 	<-t.closed
 	return t.sentShortHdr
 }
 
-func (t *packetTracer) getRcvdLongHeaderPackets() []packet {
+func (t *packetCounter) getRcvdLongHeaderPackets() []packet {
 	<-t.closed
 	return t.rcvdLongHdr
 }
 
-func (t *packetTracer) getRcvdShortHeaderPackets() []shortHeaderPacket {
+func (t *packetCounter) getRcvdShortHeaderPackets() []shortHeaderPacket {
 	<-t.closed
 	return t.rcvdShortHdr
+}
+
+func newPacketTracer() (*packetCounter, *logging.ConnectionTracer) {
+	c := &packetCounter{closed: make(chan struct{})}
+	return c, &logging.ConnectionTracer{
+		ReceivedLongHeaderPacket: func(hdr *logging.ExtendedHeader, _ logging.ByteCount, _ logging.ECN, frames []logging.Frame) {
+			c.rcvdLongHdr = append(c.rcvdLongHdr, packet{time: time.Now(), hdr: hdr, frames: frames})
+		},
+		ReceivedShortHeaderPacket: func(hdr *logging.ShortHeader, _ logging.ByteCount, _ logging.ECN, frames []logging.Frame) {
+			c.rcvdShortHdr = append(c.rcvdShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
+		},
+		SentShortHeaderPacket: func(hdr *logging.ShortHeader, _ logging.ByteCount, _ logging.ECN, ack *wire.AckFrame, frames []logging.Frame) {
+			if ack != nil {
+				frames = append(frames, ack)
+			}
+			c.sentShortHdr = append(c.sentShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
+		},
+		Close: func() { close(c.closed) },
+	}
 }
 
 func TestSelf(t *testing.T) {

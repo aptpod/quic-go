@@ -25,7 +25,7 @@ type StreamCreator interface {
 	OpenUniStream() (quic.SendStream, error)
 	OpenUniStreamSync(context.Context) (quic.SendStream, error)
 	SendMessage([]byte) error
-	ReceiveMessage() ([]byte, error)
+	ReceiveMessage(ctx context.Context) ([]byte, error)
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	ConnectionState() quic.ConnectionState
@@ -66,11 +66,12 @@ func (r *body) wasStreamHijacked() bool {
 }
 
 func (r *body) Read(b []byte) (int, error) {
-	return r.str.Read(b)
+	n, err := r.str.Read(b)
+	return n, maybeReplaceError(err)
 }
 
 func (r *body) Close() error {
-	r.str.CancelRead(quic.StreamErrorCode(errorRequestCanceled))
+	r.str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
 	return nil
 }
 
@@ -113,7 +114,7 @@ func (r *hijackableBody) Read(b []byte) (int, error) {
 	if err != nil {
 		r.requestDone()
 	}
-	return n, err
+	return n, maybeReplaceError(err)
 }
 
 func (r *hijackableBody) requestDone() {
@@ -133,7 +134,7 @@ func (r *body) StreamID() quic.StreamID {
 func (r *hijackableBody) Close() error {
 	r.requestDone()
 	// If the EOF was read, CancelRead() is a no-op.
-	r.str.CancelRead(quic.StreamErrorCode(errorRequestCanceled))
+	r.str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
 	return nil
 }
 

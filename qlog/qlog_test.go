@@ -2,7 +2,6 @@ package qlog
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -51,17 +50,6 @@ type entry struct {
 }
 
 var _ = Describe("Tracing", func() {
-	Context("tracer", func() {
-		It("returns nil when there's no io.WriteCloser", func() {
-			t := NewTracer(func(logging.Perspective, []byte) io.WriteCloser { return nil })
-			Expect(t.TracerForConnection(
-				context.Background(),
-				logging.PerspectiveClient,
-				protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
-			)).To(BeNil())
-		})
-	})
-
 	It("stops writing when encountering an error", func() {
 		buf := &bytes.Buffer{}
 		t := NewConnectionTracer(
@@ -82,15 +70,14 @@ var _ = Describe("Tracing", func() {
 
 	Context("connection tracer", func() {
 		var (
-			tracer logging.ConnectionTracer
+			tracer *logging.ConnectionTracer
 			buf    *bytes.Buffer
 		)
 
 		BeforeEach(func() {
 			buf = &bytes.Buffer{}
-			t := NewTracer(func(logging.Perspective, []byte) io.WriteCloser { return nopWriteCloser(buf) })
-			tracer = t.TracerForConnection(
-				context.Background(),
+			tracer = NewConnectionTracer(
+				nopWriteCloser(buf),
 				logging.PerspectiveServer,
 				protocol.ParseConnectionID([]byte{0xde, 0xad, 0xbe, 0xef}),
 			)
@@ -245,9 +232,8 @@ var _ = Describe("Tracing", func() {
 				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
 				Expect(entry.Name).To(Equal("transport:connection_closed"))
 				ev := entry.Event
-				Expect(ev).To(HaveLen(2))
-				Expect(ev).To(HaveKeyWithValue("owner", "remote"))
-				Expect(ev).To(HaveKeyWithValue("trigger", "version_negotiation"))
+				Expect(ev).To(HaveLen(1))
+				Expect(ev).To(HaveKeyWithValue("trigger", "version_mismatch"))
 			})
 
 			It("records application errors", func() {
@@ -428,11 +414,12 @@ var _ = Describe("Tracing", func() {
 							DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
 							SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
 							Length:           1337,
-							Version:          protocol.VersionTLS,
+							Version:          protocol.Version1,
 						},
 						PacketNumber: 1337,
 					},
 					987,
+					logging.ECNCE,
 					nil,
 					[]logging.Frame{
 						&logging.MaxStreamDataFrame{StreamID: 42, MaximumStreamData: 987},
@@ -453,6 +440,7 @@ var _ = Describe("Tracing", func() {
 				Expect(hdr).To(HaveKeyWithValue("packet_number", float64(1337)))
 				Expect(hdr).To(HaveKeyWithValue("scid", "04030201"))
 				Expect(ev).To(HaveKey("frames"))
+				Expect(ev).To(HaveKeyWithValue("ecn", "CE"))
 				frames := ev["frames"].([]interface{})
 				Expect(frames).To(HaveLen(2))
 				Expect(frames[0].(map[string]interface{})).To(HaveKeyWithValue("frame_type", "max_stream_data"))
@@ -466,6 +454,7 @@ var _ = Describe("Tracing", func() {
 						PacketNumber:     1337,
 					},
 					123,
+					logging.ECNUnsupported,
 					&logging.AckFrame{AckRanges: []logging.AckRange{{Smallest: 1, Largest: 10}}},
 					[]logging.Frame{&logging.MaxDataFrame{MaximumData: 987}},
 				)
@@ -475,6 +464,7 @@ var _ = Describe("Tracing", func() {
 				Expect(raw).To(HaveKeyWithValue("length", float64(123)))
 				Expect(raw).ToNot(HaveKey("payload_length"))
 				Expect(ev).To(HaveKey("header"))
+				Expect(ev).ToNot(HaveKey("ecn"))
 				hdr := ev["header"].(map[string]interface{})
 				Expect(hdr).To(HaveKeyWithValue("packet_type", "1RTT"))
 				Expect(hdr).To(HaveKeyWithValue("packet_number", float64(1337)))
@@ -494,11 +484,12 @@ var _ = Describe("Tracing", func() {
 							SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
 							Token:            []byte{0xde, 0xad, 0xbe, 0xef},
 							Length:           1234,
-							Version:          protocol.VersionTLS,
+							Version:          protocol.Version1,
 						},
 						PacketNumber: 1337,
 					},
 					789,
+					logging.ECT0,
 					[]logging.Frame{
 						&logging.MaxStreamDataFrame{StreamID: 42, MaximumStreamData: 987},
 						&logging.StreamFrame{StreamID: 123, Offset: 1234, Length: 6, Fin: true},
@@ -512,6 +503,7 @@ var _ = Describe("Tracing", func() {
 				raw := ev["raw"].(map[string]interface{})
 				Expect(raw).To(HaveKeyWithValue("length", float64(789)))
 				Expect(raw).To(HaveKeyWithValue("payload_length", float64(1234)))
+				Expect(ev).To(HaveKeyWithValue("ecn", "ECT(0)"))
 				Expect(ev).To(HaveKey("header"))
 				hdr := ev["header"].(map[string]interface{})
 				Expect(hdr).To(HaveKeyWithValue("packet_type", "initial"))
@@ -534,6 +526,7 @@ var _ = Describe("Tracing", func() {
 				tracer.ReceivedShortHeaderPacket(
 					shdr,
 					789,
+					logging.ECT1,
 					[]logging.Frame{
 						&logging.MaxStreamDataFrame{StreamID: 42, MaximumStreamData: 987},
 						&logging.StreamFrame{StreamID: 123, Offset: 1234, Length: 6, Fin: true},
@@ -547,6 +540,7 @@ var _ = Describe("Tracing", func() {
 				raw := ev["raw"].(map[string]interface{})
 				Expect(raw).To(HaveKeyWithValue("length", float64(789)))
 				Expect(raw).To(HaveKeyWithValue("payload_length", float64(789-(1+8+3))))
+				Expect(ev).To(HaveKeyWithValue("ecn", "ECT(1)"))
 				Expect(ev).To(HaveKey("header"))
 				hdr := ev["header"].(map[string]interface{})
 				Expect(hdr).To(HaveKeyWithValue("packet_type", "1RTT"))
@@ -563,7 +557,7 @@ var _ = Describe("Tracing", func() {
 						DestConnectionID: protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
 						SrcConnectionID:  protocol.ParseConnectionID([]byte{4, 3, 2, 1}),
 						Token:            []byte{0xde, 0xad, 0xbe, 0xef},
-						Version:          protocol.VersionTLS,
+						Version:          protocol.Version1,
 					},
 				)
 				entry := exportAndParseSingle()
@@ -869,6 +863,27 @@ var _ = Describe("Tracing", func() {
 				ev := entry.Event
 				Expect(ev).To(HaveLen(1))
 				Expect(ev).To(HaveKeyWithValue("event_type", "cancelled"))
+			})
+
+			It("records an ECN state transition, without a trigger", func() {
+				tracer.ECNStateUpdated(logging.ECNStateUnknown, logging.ECNTriggerNoTrigger)
+				entry := exportAndParseSingle()
+				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
+				Expect(entry.Name).To(Equal("recovery:ecn_state_updated"))
+				ev := entry.Event
+				Expect(ev).To(HaveLen(1))
+				Expect(ev).To(HaveKeyWithValue("new", "unknown"))
+			})
+
+			It("records an ECN state transition, with a trigger", func() {
+				tracer.ECNStateUpdated(logging.ECNStateFailed, logging.ECNFailedNoECNCounts)
+				entry := exportAndParseSingle()
+				Expect(entry.Time).To(BeTemporally("~", time.Now(), scaleDuration(10*time.Millisecond)))
+				Expect(entry.Name).To(Equal("recovery:ecn_state_updated"))
+				ev := entry.Event
+				Expect(ev).To(HaveLen(2))
+				Expect(ev).To(HaveKeyWithValue("new", "failed"))
+				Expect(ev).To(HaveKeyWithValue("trigger", "ACK doesn't contain ECN marks"))
 			})
 
 			It("records a generic event", func() {
